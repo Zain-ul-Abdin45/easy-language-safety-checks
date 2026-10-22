@@ -1,0 +1,11 @@
+torch
+transformers
+accelerate
+pyyaml
+pandas
+scikit-learn      # AUC for the January go/no-go check
+textstat          # readability scores
+spacy             # sentence split, alignment, named entities
+psycopg[binary]
+python-dotenv
+sentence-transformers   # sentence alignment and semantic similarity

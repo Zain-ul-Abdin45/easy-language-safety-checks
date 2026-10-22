@@ -1,0 +1,20 @@
+# Draft parameters. Freeze before any held-out run (memo Fig. 1, step A).
+status: draft
+language: en
+target_level: TBD   # depends on supervisor answer to question 1
+model:
+  name: Qwen/Qwen2.5-1.5B-Instruct
+  backend: transformers   # needs token probabilities for C2; Ollama as optional speed comparison
+  quantization: none      # CPU-only laptop proxy; GGUF Q4 comparison is an optional extension
+  temperature: TBD
+  seeds: [1, 2, 3]        # "stable across runs" needs more than one seed
+data:
+  n_texts: TBD            # 50-100
+  dev_fraction: 0.2
+conditions: [C1, C2, C3, C4, C5]
+probability_filter:
+  threshold: TBD          # tuned on dev only
+  go_no_go: "AUC on dev clearly above 0.5; else drop C2 and C5 probability step"
+lookup:
+  wordlist: wordlists/TBD
+grammar_rules: TBD

@@ -1,0 +1,6 @@
+.venv/
+.env
+__pycache__/
+results/*
+!results/.gitkeep
+.DS_Store
