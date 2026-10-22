@@ -221,6 +221,7 @@ SELECT c1.seed, c1.split,
        (c5.mean_fkgl_gain / NULLIF(c1.mean_fkgl_gain,0)
           >= (SELECT threshold FROM success_criteria WHERE key='min_simplification_kept')) AS crit_simplification,
        CASE
+         WHEN NOT EXISTS (SELECT 1 FROM harm_annotations) THEN 'pending annotation'
          WHEN c5.harm_per_100w < c1.harm_per_100w
           AND c5.preservation_rate >= c1.preservation_rate
           AND c5.mean_fkgl_gain / NULLIF(c1.mean_fkgl_gain,0)
@@ -237,7 +238,8 @@ SELECT split,
        count(DISTINCT verdict)           AS distinct_verdicts,
        (count(DISTINCT verdict) = 1)     AS stable,
        min(verdict)                      AS verdict_if_stable,
-       CASE WHEN count(DISTINCT verdict) = 1 AND min(verdict) <> 'negative: no harm reduction'
+       CASE WHEN min(verdict) = 'pending annotation' THEN 'pending annotation'
+            WHEN count(DISTINCT verdict) = 1 AND min(verdict) <> 'negative: no harm reduction'
             THEN 'German replication allowed in thesis' ELSE 'German transfer untested' END AS german_gate
 FROM v_c5_vs_c1
 GROUP BY split;
@@ -251,3 +253,12 @@ SELECT m.month, m.planned_hours,
 FROM milestones m LEFT JOIN work_log w ON w.month = m.month
 GROUP BY m.month, m.sort, m.planned_hours, m.done, m.main_output
 ORDER BY m.sort;
+
+-- ---------- Grammar rule flags (added for the pilot) ----------
+CREATE TABLE grammar_flags (
+  condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
+  rule                 text NOT NULL,     -- long_sentence, passive, abbreviation
+  n                    int  NOT NULL,
+  example              text,
+  PRIMARY KEY (condition_output_id, rule)
+);

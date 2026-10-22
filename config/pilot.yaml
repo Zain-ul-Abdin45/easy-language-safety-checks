@@ -1,0 +1,16 @@
+# Pilot settings (dev split only). Not frozen.
+model: Qwen/Qwen2.5-1.5B-Instruct
+device: cpu            # memo: CPU-only laptop proxy
+dtype: float32
+seeds: [1, 2]
+temperature: 0.3
+top_p: 0.9
+max_new_tokens: 450
+prompt_version: pilot-v1
+target_level: easy-to-read (working)
+prob_threshold: 0.30   # C2: revert span if geometric-mean token probability < this. Placeholder until AUC on dev.
+max_span_tokens: 3     # replace ops up to this many words on each side count as word-level (reachable)
+align_model: sentence-transformers/all-MiniLM-L6-v2
+min_sentence_similarity: 0.45   # cosine; below = output sentence has no source
+long_sentence_words: 15
+texts: data/dev/pilot_texts.jsonl
