@@ -1,4 +1,4 @@
-# difficult	simple  (pilot table, hand-written; extend from dev outputs)
+# difficult	simple  (hand-written table. Frozen before the dev run: extend ONLY from the 8 pilot texts, never from dev outputs; say so in the protocol)
 commence	start
 commences	starts
 commencement	start

@@ -1,6 +1,32 @@
+# Environment and secrets
 .venv/
 .env
+
+# Python and tool caches
 __pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+~$*
+
+# Generated results, annotation sheets (they hold labels) and report copies; reproduce with src/
 results/*
 !results/.gitkeep
-.DS_Store
+
+# Held-out texts stay out of the repo until the one-time held-out run; raw downloads are not redistributed (licences)
+data/heldout/*
+!data/heldout/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+
+# Spreadsheet working copies, logs and backups
+*.numbers
+*.xlsx
+*.log
+*.bak
+*.orig

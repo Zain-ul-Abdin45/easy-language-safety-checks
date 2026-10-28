@@ -4,10 +4,13 @@ Run:  .venv/bin/python src/pilot_report.py [--texts 100 --seeds 3]
 Writes results/pilot_report.md and prints it.
 """
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
+import verdict as verdict_mod
+from auc_decision import as_markdown, compute, sensitivity
 from db import connect
 
 OUT = Path(__file__).resolve().parents[1] / "results/pilot_report.md"
@@ -50,11 +53,16 @@ def main():
         speed = q(conn, """SELECT r.seed, count(*) texts, round(avg(b.gen_seconds),1) gen_s_per_text,
                  round(max(b.peak_mem_mb)) peak_mem_mb, max(r.hardware) hardware
                  FROM base_outputs b JOIN runs r ON r.id=b.run_id GROUP BY r.seed ORDER BY r.seed""")
-        ann = q(conn, "SELECT count(DISTINCT condition_output_id) annotated_outputs, count(*) harm_tags FROM harm_annotations")
+        ann = q(conn, """SELECT (SELECT count(*) FROM output_reviews WHERE rater_role='primary') annotated_outputs,
+                 (SELECT count(*) FROM harm_annotations WHERE rater_role='primary') harm_tags""")
         uniq = conn.execute("SELECT count(DISTINCT (base_output_id, md5(output))) FROM condition_outputs").fetchone()[0]
         total_co = conn.execute("SELECT count(*) FROM condition_outputs").fetchone()[0]
         verdict = q(conn, "SELECT * FROM v_c5_vs_c1")
         auc = q(conn, "SELECT * FROM v_probability_auc")
+        auc_dec = compute(conn)
+        v_main, v_sens = verdict_mod.compute(conn, split="dev")
+        auc_sens = sensitivity(conn) if auc_dec["n_spans"] else None
+        runs = q(conn, "SELECT min(created_at) first_generation, max(created_at) last_generation, count(*) runs FROM runs")
         example = q(conn, """SELECT b.text_id, r.seed, cs.source_span, cs.output_span, round(cs.probability,3) prob,
                  max(CASE WHEN sa.condition='C2' THEN sa.action END) c2, max(CASE WHEN sa.condition='C3' THEN sa.action END) c3,
                  max(CASE WHEN sa.condition='C3' THEN sa.final_span END) c3_final
@@ -76,7 +84,12 @@ def main():
                * a.texts * 0.2 * a.seeds)),
     ], columns=["Full run estimate", f"{a.texts} texts x {a.seeds} seeds"])
 
+    stamp = datetime.now().astimezone()
     report = f"""# Pilot report
+Report generated: {stamp:%Y-%m-%d %H:%M:%S %Z}
+
+## Generation runs in the database
+{md(runs)}
 
 ## Sample
 {md(src)}
@@ -109,14 +122,21 @@ Unique outputs needing annotation: {uniq} of {total_co} condition outputs.
 ## January go/no-go (needs span labels)
 {md(auc)}
 
+{as_markdown(auc_dec, auc_sens)}
+
 ## C5 vs C1 (needs harm annotation)
 {md(verdict)}
+
+Paired bootstrap over texts (dev, pilot):
+
+{verdict_mod.as_markdown(v_main, v_sens)}
 
 ## How far can the full study go?
 {md(proj)}
 """
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(report)
+    OUT.with_name(f"pilot_report_{stamp:%Y%m%d_%H%M%S}.md").write_text(report)   # keep every run
     print(report)
 
 

@@ -81,6 +81,7 @@ def generate(tok, model, text: str, seed: int):
 @torch.no_grad()
 def token_probs(tok, model, prompt_ids, gen_ids):
     """Model probability of each generated token given prompt and earlier output (one forward pass).
+    Plain softmax (temperature 1), not the sampling temperature; keep the same scoring for the AUC and for tau.
     Returns output text and a list of (char_start, char_end, prob)."""
     full = torch.cat([prompt_ids, torch.tensor([gen_ids], device=prompt_ids.device)], dim=1)
     logits = model(full).logits[0, prompt_ids.shape[1] - 1:-1].float()
@@ -157,12 +158,24 @@ def is_easy(word: str) -> bool:
                for t in doc)
 
 
+def swap_word(w: str) -> str:
+    """Replace a hard word from the table; keep surrounding punctuation and a leading capital."""
+    m = re.match(r"^(\W*)(.*?)(\W*)$", w)
+    lead, core, trail = m.groups()
+    easy = REPL.get(core.lower())
+    if easy is None:
+        return w
+    if core[:1].isupper():
+        easy = easy[:1].upper() + easy[1:]
+    return lead + easy + trail
+
+
 def lookup_action(span: Span):
     """C3 policy for one span: keep if every word is on the list, else replace hard words, else revert."""
     words = span.out.split()
     if all(is_easy(w) for w in words):
         return "keep", span.out
-    replaced = [REPL.get(w.lower().strip(".,;:"), w) for w in words]
+    replaced = [swap_word(w) for w in words]
     if replaced != words and all(is_easy(w) for w in " ".join(replaced).split()):
         return "replace", " ".join(replaced)
     return "revert", span.src
@@ -205,14 +218,20 @@ def words(text: str) -> int:
     return sum(1 for t in NLP.tokenizer(text) if t.is_alpha or t.like_num)
 
 
-def peak_mem_mb() -> float:
+def peak_mem_mb() -> float:   # process maximum so far: a run-level figure, not per output
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024   # macOS reports bytes
 
 
 # ---------------------------------------------------------------- main
-def load_texts(conn, path: Path, limit: int | None):
-    rows = [json.loads(l) for l in open(path)][:limit]
+def load_texts(conn, paths: list[Path], limit: int | None):
+    rows = [json.loads(l) for p in paths for l in open(p, encoding="utf-8") if l.strip()][:limit]
     for r in rows:
+        if r["split"] != "dev":
+            raise SystemExit(f"{r['id']}: split is {r['split']!r}; this config runs dev texts only")
+        old = conn.execute("SELECT body FROM texts WHERE id=%s", (r["id"],)).fetchone()
+        if old and old[0] != r["body"] and conn.execute(
+                "SELECT 1 FROM base_outputs WHERE text_id=%s LIMIT 1", (r["id"],)).fetchone():
+            raise SystemExit(f"{r['id']}: text changed after outputs exist; texts are frozen once run")
         conn.execute("""INSERT INTO texts(id,source,licence,text_type,is_synthetic,split,body,word_count,fkgl)
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (id) DO UPDATE SET body=EXCLUDED.body, word_count=EXCLUDED.word_count,
@@ -268,7 +287,7 @@ def main():
 
     tok, model = load_model()
     with connect() as conn:
-        texts = load_texts(conn, ROOT / CFG["texts"], args.limit)
+        texts = load_texts(conn, [ROOT / p for p in ([CFG["texts"]] if isinstance(CFG["texts"], str) else CFG["texts"])], args.limit)
         conn.commit()
         for seed in args.seeds:
             run_id = conn.execute(
@@ -288,12 +307,13 @@ def main():
                     output = output[cut:]
                     tok_spans = [(s - cut, e - cut, p) for s, e, p in tok_spans if e > cut]
                     n_preamble += 1
+                truncated = len(gen_ids) >= CFG["max_new_tokens"]   # cut off by the token limit: rater would see a fake omission
                 spans = align(r["body"], output)
                 conds = run_conditions(spans, output, tok_spans)
 
-                b_id = conn.execute("""INSERT INTO base_outputs(run_id,text_id,output,gen_seconds,peak_mem_mb)
-                                       VALUES (%s,%s,%s,%s,%s) RETURNING id""",
-                                    (run_id, r["id"], output, gen_s, peak_mem_mb())).fetchone()[0]
+                b_id = conn.execute("""INSERT INTO base_outputs(run_id,text_id,output,gen_seconds,peak_mem_mb,truncated)
+                                       VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                                    (run_id, r["id"], output, gen_s, peak_mem_mb(), truncated)).fetchone()[0]
                 for s in spans:
                     s.db_id = conn.execute(
                         """INSERT INTO changed_spans(base_output_id,sentence_idx,source_span,output_span,reachable,
@@ -305,7 +325,8 @@ def main():
                 for cond, (text, extra_s, flags) in conds.items():
                     if cond in ("C2", "C5"):
                         extra_s += score_s
-                    changed = any(s.actions.get(cond, ("keep",))[0] != "keep" for s in spans)
+                    src_cond = "C3" if cond == "C4" else cond   # C4 = C3 text plus grammar flags
+                    changed = any(s.actions.get(src_cond, ("keep",))[0] != "keep" for s in spans)
                     prot = [p["value"] for p in r["protected"]]
                     co_id = conn.execute(
                         """INSERT INTO condition_outputs(base_output_id,condition,output,word_count,fkgl,
@@ -319,7 +340,8 @@ def main():
                 conn.commit()
                 n_reach = sum(s.reachable for s in spans)
                 print(f"seed {seed} {r['id']}: {len(gen_ids)} tokens in {gen_s:.1f}s "
-                      f"({len(gen_ids) / gen_s:.1f} tok/s), spans {n_reach}/{len(spans)} reachable", flush=True)
+                      f"({len(gen_ids) / gen_s:.1f} tok/s), spans {n_reach}/{len(spans)} reachable"
+                      + ("  TRUNCATED at max_new_tokens" if truncated else ""), flush=True)
             print(f"seed {seed}: stripped a lead-in line from {n_preamble} outputs")
     print("done")
 

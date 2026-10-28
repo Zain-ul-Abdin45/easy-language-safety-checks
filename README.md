@@ -2,7 +2,7 @@
 
 KI-InnOMATiV plain-language project · Research Project Nov 2026 – Apr 2027 · 900 h
 
-Source of truth: the idea memo (October 2026). The earlier pitch (`Project_3_Pitch.md`) is superseded where it differs.
+Source of truth: `docs/01_protocol_draft.md`. The idea memo (Oct 2026) is being expanded into the exposé and is superseded where the two differ; the earlier pitch (`Project_3_Pitch.md`) is superseded too.
 
 ## Research question
 Can a probability filter, combined with a lookup table and grammar checks, make English Easy Language
@@ -27,7 +27,7 @@ post-process that same output; C5 is compared with C1 on harmful errors per 100 
 | `config/` | Frozen experiment parameters |
 | `data/raw`, `data/dev`, `data/heldout` | Source texts; dev for tuning, held-out never touched before final run |
 | `wordlists/` | Approved word lists per target level |
-| `src/` | Pipeline code (from December) |
+| `src/` | Pilot scripts exist (generation, alignment, checks, report, annotation sheets, AUC decision); full pipeline from December |
 | `results/` | Outputs, annotations, metrics |
 | `db/schema.sql` | Experiment database schema and result views |
 
@@ -63,10 +63,19 @@ psql -d easylang_p3 -c "select * from p3.v_c5_vs_c1"
 | View | Question |
 |---|---|
 | `v_condition_metrics` | Harm per 100 words, preservation, readability gain, speed, memory, share flagged, per condition and seed |
-| `v_probability_auc` | January go/no-go: AUC of the probability signal on dev |
+| `v_probability_auc` | AUC point estimate only (fragments excluded) with counts. The interval and the decision come from `src/auc_decision.py`. |
 | `v_reach` | Share of changed spans the word-level checks can reach |
-| `v_c5_vs_c1` | Each success criterion met or not, and a verdict per seed |
+| `v_c5_vs_c1` | Point values of each success criterion and a verdict per seed. The interval-based verdict is `src/verdict.py`. |
 | `v_stability` | Same verdict on every seed, and whether German goes ahead |
 | `v_progress` | Hours spent against the 900 h plan (log hours in `work_log`) |
 
-Thresholds live in `p3.success_criteria`. The 0.70 simplification threshold is a placeholder until decided.
+Scripts that need more than SQL:
+- `src/auc_decision.py`: 95% bootstrap interval of the AUC over texts, the GO / INCONCLUSIVE / NO-GO decision (protocol §6), the `discuss` sensitivity run, and tau for C2.
+- `src/verdict.py`: paired bootstrap over texts for C5 vs C1 and the verdict (protocol §9).
+- Both print in the pilot report. Only `primary` labels are counted; `second` and `consistency` labels (`rater_role`, tables `span_labels`, `harm_annotations`, `output_flags`) are for the agreement analysis.
+
+Thresholds live in `p3.success_criteria`:
+- `min_simplification_kept` = 0.80, **preliminary**, a narrow FKGL guard: C5 must keep at least 80% of C1's FKGL gain, i.e. the checks did not undo the simplification. FKGL is a proxy, not validated against human judgment. The memo says "most of C1's simplification"; 80% is one reading of that.
+- `max_simplicity_flag_increase` = 0.10, **preliminary**, the second guard, independent of FKGL: C5 may have at most 10 percentage points more outputs flagged for insufficient simplification than C1 (human flag, codebook §3).
+- Harm rates in `v_condition_metrics` use reviewed outputs only; `v_c5_vs_c1` shows "pending annotation" until every C1 and C5 output is reviewed.
+- `auc_go_lower` = 0.50 and `auc_inconclusive_point` = 0.60: the go / inconclusive / no-go rule, fixed before labelling (protocol §6).

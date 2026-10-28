@@ -40,7 +40,8 @@ CREATE TABLE runs (
   target_level    text,
   hardware        text,                           -- e.g. 'M3 Pro CPU-only'
   config_frozen   boolean NOT NULL DEFAULT false,
-  created_at      timestamptz DEFAULT now()
+  created_at      timestamptz DEFAULT now(),
+  UNIQUE (model, seed, prompt_version)            -- a rerun must not silently double the outputs
 );
 
 CREATE TABLE base_outputs (                       -- one per text x run (seed)
@@ -49,7 +50,8 @@ CREATE TABLE base_outputs (                       -- one per text x run (seed)
   text_id      text NOT NULL REFERENCES texts(id),
   output       text NOT NULL,
   gen_seconds  numeric,
-  peak_mem_mb  numeric,
+  peak_mem_mb  numeric,                           -- process maximum so far: run-level, not per output
+  truncated    boolean NOT NULL DEFAULT false,    -- generation hit max_new_tokens (possible fake omission)
   UNIQUE (run_id, text_id)
 );
 
@@ -74,7 +76,24 @@ CREATE TABLE changed_spans (
   reachable       boolean NOT NULL,               -- false = split/reorder/insertion the checks cannot touch
   probability     numeric,                        -- model probability of the substitute (C2 signal)
   on_wordlist     boolean,                        -- C3 signal
-  harmful_gold    boolean                         -- dev annotation for the January AUC check
+  harmful_gold    boolean,                        -- PRIMARY annotator's label for the January AUC check (NULL = not labelled or fragment)
+  discuss         boolean NOT NULL DEFAULT false, -- annotator unsure: flag for the second pass instead of guessing
+  fragment        boolean NOT NULL DEFAULT false, -- annotator: diff piece of a rewritten sentence, not a word swap (excluded from AUC)
+  labelled_by     text,
+  labelled_at     timestamptz
+);
+
+-- Every span label from every rater round. changed_spans.harmful_gold holds the primary label only;
+-- second-person and consistency labels live here and feed the agreement analysis, never the views.
+CREATE TABLE span_labels (
+  span_id      int  NOT NULL REFERENCES changed_spans(id) ON DELETE CASCADE,
+  annotator    text NOT NULL,
+  rater_role   text NOT NULL CHECK (rater_role IN ('primary','second','consistency')),
+  harmful      boolean,                           -- NULL when fragment
+  fragment     boolean NOT NULL DEFAULT false,
+  discuss      boolean NOT NULL DEFAULT false,
+  labelled_at  timestamptz DEFAULT now(),
+  PRIMARY KEY (span_id, annotator, rater_role)
 );
 
 CREATE TABLE span_actions (
@@ -105,12 +124,36 @@ CREATE TABLE harm_annotations (
   id                   serial PRIMARY KEY,
   condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
   annotator            text NOT NULL,
+  rater_role           text NOT NULL DEFAULT 'primary' CHECK (rater_role IN ('primary','second','consistency')),
+                                                   -- only 'primary' rows are counted in the views (no double counting)
   category             text NOT NULL CHECK (category IN
                         ('meaning_change','omission','wrong_number_date_name','hallucination',
-                         'altered_condition','unclear_reference','other')),
-  reachable            boolean NOT NULL,           -- could a word-level check have caught it?
+                         'altered_condition','unclear_reference','repetition','other')),
+  output_quote         text,                       -- smallest wrong piece, copied from the output by the rater
+  quote_occurrence     int,                        -- which occurrence of the quote (1-based); required when it occurs more than once
+  reachable            boolean NOT NULL,           -- computed on import: quote <= max_span_tokens words and overlaps a reachable changed span
   severity             int CHECK (severity BETWEEN 1 AND 3),
   note                 text,
+  created_at           timestamptz DEFAULT now()
+);
+
+-- One row per output a rater has reviewed, including outputs with no error ("none"), so that
+-- "reviewed, no harm" can be told apart from "not reviewed yet".
+CREATE TABLE output_reviews (
+  condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
+  annotator            text NOT NULL,
+  rater_role           text NOT NULL CHECK (rater_role IN ('primary','second','consistency')),
+  reviewed_at          timestamptz DEFAULT now(),
+  PRIMARY KEY (condition_output_id, annotator, rater_role)
+);
+
+-- Non-harm flags per output: insufficient simplification (tracked apart from harm) and "discuss".
+CREATE TABLE output_flags (
+  id                   serial PRIMARY KEY,
+  condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
+  annotator            text NOT NULL,
+  rater_role           text NOT NULL DEFAULT 'primary' CHECK (rater_role IN ('primary','second','consistency')),
+  kind                 text NOT NULL CHECK (kind IN ('simplicity_lexical','simplicity_structural','discuss')),
   created_at           timestamptz DEFAULT now()
 );
 
@@ -121,8 +164,11 @@ CREATE TABLE success_criteria (
   description  text NOT NULL
 );
 INSERT INTO success_criteria VALUES
- ('min_simplification_kept', 0.70, 'C5 keeps at least this share of C1 readability gain (placeholder, decide before held-out)'),
- ('auc_go',                  0.55, 'Probability signal must exceed this AUC on dev to keep C2/C5 probability step'),
+ ('min_simplification_kept', 0.80, 'PRELIMINARY: C5 keeps at least this share of C1 readability gain (confirm before held-out)'),
+ ('auc_go_lower',            0.50, 'GO if the lower bound of the text-level bootstrap interval of the dev AUC is above this'),
+ ('tau_max_harmless_reverted', 0.20, 'PRELIMINARY: tau for C2 is set on dev as the largest value that reverts at most this share of harmless (labelled n) dev spans'),
+ ('max_simplicity_flag_increase', 0.10, 'PRELIMINARY: C5 may have at most this many percentage points more outputs flagged for insufficient simplification than C1 (human guard, independent of FKGL)'),
+ ('auc_inconclusive_point',  0.60, 'INCONCLUSIVE if AUC point estimate is at least this but the lower bound is not above auc_go_lower'),
  ('max_post_seconds',        NULL, 'Optional: max extra seconds per text the checks may add');
 
 -- ---------- Project feasibility ----------
@@ -156,8 +202,11 @@ CREATE VIEW v_condition_metrics AS
 WITH per_output AS (
   SELECT co.id, co.condition, r.seed, t.split, co.word_count, co.fkgl, t.fkgl AS src_fkgl,
          co.protected_preserved, co.protected_total, co.post_seconds, b.gen_seconds, b.peak_mem_mb, co.flagged,
-         (SELECT count(*) FROM harm_annotations h WHERE h.condition_output_id = co.id)                    AS harms,
-         (SELECT count(*) FROM harm_annotations h WHERE h.condition_output_id = co.id AND h.reachable)    AS harms_reach
+         EXISTS (SELECT 1 FROM output_reviews o WHERE o.condition_output_id = co.id AND o.rater_role = 'primary') AS reviewed,
+         -- harm = severity 2-3 (codebook v0.2.4); severity 1 tags are minor notes, kept in harms_all for the sensitivity check
+         (SELECT count(*) FROM harm_annotations h WHERE h.condition_output_id = co.id AND h.rater_role = 'primary' AND h.severity >= 2) AS harms,
+         (SELECT count(*) FROM harm_annotations h WHERE h.condition_output_id = co.id AND h.rater_role = 'primary' AND h.severity >= 2 AND h.reachable) AS harms_reach,
+         (SELECT count(*) FROM harm_annotations h WHERE h.condition_output_id = co.id AND h.rater_role = 'primary')                    AS harms_all
   FROM condition_outputs co
   JOIN base_outputs b ON b.id = co.base_output_id
   JOIN runs r ON r.id = b.run_id
@@ -165,13 +214,16 @@ WITH per_output AS (
 )
 SELECT condition, seed, split,
        count(*)                                                   AS n_outputs,
-       round(100.0 * sum(harms)       / NULLIF(sum(word_count),0), 3) AS harm_per_100w,
-       round(100.0 * sum(harms_reach) / NULLIF(sum(word_count),0), 3) AS reachable_harm_per_100w,
+       -- harm rates use REVIEWED outputs only (numerator and words); the other columns use all outputs
+       round(100.0 * sum(harms)       FILTER (WHERE reviewed) / NULLIF(sum(word_count) FILTER (WHERE reviewed),0), 3) AS harm_per_100w,
+       round(100.0 * sum(harms_reach) FILTER (WHERE reviewed) / NULLIF(sum(word_count) FILTER (WHERE reviewed),0), 3) AS reachable_harm_per_100w,
        round(sum(protected_preserved)::numeric / NULLIF(sum(protected_total),0), 3) AS preservation_rate,
        round(avg(src_fkgl - fkgl), 2)                             AS mean_fkgl_gain,
        round(avg(gen_seconds + post_seconds), 2)                  AS mean_seconds_per_text,
        round(max(peak_mem_mb), 0)                                 AS peak_mem_mb,
-       round(avg(flagged::int), 3)                                AS share_flagged
+       round(avg(flagged::int), 3)                                AS share_flagged,
+       count(*) FILTER (WHERE reviewed)                           AS n_reviewed,
+       round(100.0 * sum(harms_all)   FILTER (WHERE reviewed) / NULLIF(sum(word_count) FILTER (WHERE reviewed),0), 3) AS harm_all_tags_per_100w
 FROM per_output
 GROUP BY condition, seed, split;
 
@@ -188,13 +240,24 @@ GROUP BY r.seed, t.split;
 
 -- January go/no-go: AUC of the probability signal (low probability should mean harmful).
 -- Mann-Whitney formulation: P(prob_harmless > prob_harmful), ties count half.
+-- POINT ESTIMATE ONLY. The bootstrap interval over texts and the go / inconclusive / no-go decision
+-- (protocol section 6) are computed by src/auc_decision.py, which also prints in the pilot report.
+-- Fragments (f) and unlabelled spans are excluded.
 CREATE VIEW v_probability_auc AS
-WITH s AS (
+WITH s2 AS (
+  SELECT cs.id, b.text_id
+  FROM changed_spans cs
+  JOIN base_outputs b ON b.id = cs.base_output_id
+  JOIN texts t ON t.id = b.text_id
+  WHERE t.split = 'dev' AND cs.reachable AND NOT cs.fragment
+    AND cs.harmful_gold IS NOT NULL AND cs.probability IS NOT NULL
+), s AS (
   SELECT cs.probability, cs.harmful_gold
   FROM changed_spans cs
   JOIN base_outputs b ON b.id = cs.base_output_id
   JOIN texts t ON t.id = b.text_id
-  WHERE t.split = 'dev' AND cs.harmful_gold IS NOT NULL AND cs.probability IS NOT NULL AND cs.reachable
+  WHERE t.split = 'dev' AND cs.reachable AND NOT cs.fragment
+    AND cs.harmful_gold IS NOT NULL AND cs.probability IS NOT NULL
 ), pairs AS (
   SELECT CASE WHEN ok.probability > bad.probability THEN 1.0
               WHEN ok.probability = bad.probability THEN 0.5 ELSE 0 END AS win
@@ -203,10 +266,8 @@ WITH s AS (
 SELECT (SELECT count(*) FROM s WHERE harmful_gold)     AS n_harmful,
        (SELECT count(*) FROM s WHERE NOT harmful_gold) AS n_harmless,
        round(avg(win), 3)                              AS auc,
-       (SELECT threshold FROM success_criteria WHERE key = 'auc_go') AS auc_go_threshold,
-       CASE WHEN avg(win) IS NULL THEN 'no data'
-            WHEN avg(win) > (SELECT threshold FROM success_criteria WHERE key = 'auc_go') THEN 'GO: keep probability step'
-            ELSE 'NO-GO: continue with lookup and grammar only' END AS decision
+       (SELECT count(*) FROM changed_spans WHERE fragment)             AS n_fragments,
+       (SELECT count(DISTINCT text_id) FROM s2)                         AS n_texts
 FROM pairs;
 
 -- Main verdict: C5 vs C1 per seed, against the memo's three criteria.
@@ -221,13 +282,14 @@ SELECT c1.seed, c1.split,
        (c5.mean_fkgl_gain / NULLIF(c1.mean_fkgl_gain,0)
           >= (SELECT threshold FROM success_criteria WHERE key='min_simplification_kept')) AS crit_simplification,
        CASE
-         WHEN NOT EXISTS (SELECT 1 FROM harm_annotations) THEN 'pending annotation'
+         WHEN c1.n_reviewed < c1.n_outputs OR c5.n_reviewed < c5.n_outputs THEN 'pending annotation'
          WHEN c5.harm_per_100w < c1.harm_per_100w
           AND c5.preservation_rate >= c1.preservation_rate
           AND c5.mean_fkgl_gain / NULLIF(c1.mean_fkgl_gain,0)
               >= (SELECT threshold FROM success_criteria WHERE key='min_simplification_kept') THEN 'success'
          WHEN c5.harm_per_100w < c1.harm_per_100w THEN 'partial: less harm, other criterion missed'
-         ELSE 'negative: no harm reduction' END AS verdict
+         ELSE 'negative: no harm reduction' END AS verdict,
+       c1.n_reviewed AS c1_reviewed, c5.n_reviewed AS c5_reviewed, c1.n_outputs AS n_outputs
 FROM m c1 JOIN m c5 ON c5.seed = c1.seed AND c5.split = c1.split
 WHERE c1.condition = 'C1' AND c5.condition = 'C5';
 
