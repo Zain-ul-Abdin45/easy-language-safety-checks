@@ -63,6 +63,7 @@ Open design decisions:
   Decide whether rules rewrite or only flag.
 
 ## 6. Go/no-go check (January)
+> Amended 2026-10-31 for held-out and later: span labels are derived from output tags (codebook v0.2.5, section 11 of this protocol). The rules below applied to the dev set as written.
 - Annotate changed spans on dev texts as harmful / not harmful. Plan 30-40 dev texts, aiming for at least
   150 labelled spans and at least 40 harmful ones. Report the harmful count next to the AUC.
 - Compute AUC of the probability signal with a 95% bootstrap interval that resamples texts (seeds of one
@@ -165,3 +166,57 @@ Stability: direction of effect holds across all seeds.
   - Consistency check: the researcher re-labels the same subset at least a week later without seeing the
     first labels. This is intra-rater agreement, not a second rater, and is reported as a consistency check.
 - Thesis: three expert raters (German and wider human check, deferred).
+
+## 11. Deviations and amendments (log)
+| Date | What | Who and why | Applies to |
+|---|---|---|---|
+| 2026-10-31 | Codebook v0.2.5: the span label for the AUC is derived from severity 2-3 output tags (harmful if a tag's quote overlaps the span; harmless otherwise; fragments still marked by the annotator; spans overlapped only by a quote of more than 3 words left out; no `discuss` on spans). | Decided by the researcher, after seeing the dev results. On the 32 dev texts, 14 of 32 spans labelled harmful in Unit 1 overlapped no severity 2-3 tag, so the AUC used a broader harm definition than the primary measure. | Held-out and later. Not applied to the dev decision, which stands under v0.2.4 (AUC 0.569, NO-GO). The tag-derived dev AUC (0.546 [0.405, 0.693], NO-GO) is reported as a sensitivity analysis. A third variant that drops the untagged harmful spans (0.607, INCONCLUSIVE) is reported but not used for a decision: it removes data selectively. |
+
+Open before held-out: the importer and sheets for the derived span labels, and a new freeze date for the codebook.
+
+### 11.1 Pivot to sentence- and fact-level checks: proposal and Gate A (written 2026-10-31, before any screen is computed)
+Source: `Project 3 pivot plan.md` (2026-10-31). Status: proposal by the researcher; the supervisor has not yet been consulted (questions in the plan).
+Reason: on dev, 17 of 90 severity 2-3 tags (19%) lie where word-level checks can act, and the probability AUC is NO-GO (0.569 [0.409, 0.726]). All decisions from here on are made with the dev results known.
+
+Gate A (offline screen on the 64 C1 outputs of the 32 dev texts; no new generation). The rule is fixed here, before the numbers are computed:
+- Unit: output sentence. A sentence is harmful if the quote of a severity 2-3 tag lies in it. Omission tags have no quote and enter only after their source sentence is recorded (backfill); until then they are reported separately.
+- Harm recall of a check = harmful sentences it flags / all harmful sentences. Flag rate = flagged sentences / all sentences, pooled over outputs.
+- Random flagging control: in each output flag the same number of sentences at random. Its expected recall is computed exactly (flags per output / sentences per output, weighted by that output's harmful sentences), so there is no sampling noise from the control.
+- A direction goes on if its flag rate is at most 30% of sentences and the lower bound of (recall minus random recall) is above 0, by a 95% bootstrap over texts (5000 resamples, all seeds of a text together). For D4 and D5 the sentence-level AUC lower bound must also be above 0.5.
+- Directions are judged one by one, not as a ranking; per-category recall is reported descriptively. With 90 tags on dev the screen asks only whether a check beats random flagging.
+- D1 (facts), D2 (conditions) and D3 (coverage) are rule-based and fixed in code before the screen, without tuning on dev. Any change to a rule after the screen is logged with date and reason.
+- If no direction passes, the negative-result route is taken: I1 plus the screen, reported as evidence that lightweight post-hoc checks do not carry over to whole-text simplification with this model.
+
+### 11.2 Digit guard (D1-digit): analysis fixed on 2026-10-31, before it was computed
+Question: how far can a sentence-level check keep numbers, times and dates secure? D1-digit is D1 (src/sentence_screen.py) restricted to digit facts (numbers, times, dates; names and weekdays are left out). A group of output sentences aligned to one source sentence is flagged if a source digit fact is missing in it, or if it contains a digit fact that occurs nowhere in the source.
+Reported on the 64 dev C1 outputs, descriptive, no pass/fail rule beyond Gate A:
+- Baseline: share of source digit facts that appear in the output, and share of outputs that lose or alter at least one.
+- Agreement with the hand lists: for protected items of kind number or date, whether D1-digit flags an output in which the automatic proxy (`protected_preserved`) misses such an item, and the reverse.
+- Recall of `wrong_number_date_name` tags whose quote holds a digit fact, flag rate on sentences with digit facts that carry no such tag, and the number of such tags left unflagged.
+- Residual: `wrong_number_date_name` tags per 100 words that remain after flagged sentences are assumed fixed.
+This is exploratory: the facts extractor was written before the dev tags were compared with it, but the dev labels are known.
+
+### 11.3 Extractor fix after the first D1 and digit-guard runs (2026-10-31, dev labels known)
+The facts extractor counted the markers of numbered lists ("1.", "2.", ...) as number facts, which produced false flags. It now ignores ordered-list markers at the start of a line. Reason: a bug, found by reading which digit facts were reported as added in outputs (D06, D09). No other rule was changed. Gate A for D1 and D2 and the digit guard are reported before and after the fix.
+
+### 11.4 D4 sentence-level probability: screen rule fixed on 2026-10-31, before it was computed
+Scores per output sentence of the 64 dev C1 outputs, from one teacher-forced pass of Qwen 2.5 1.5B over the regenerated output (same seeds and prompt, so the text is identical; the run checks this):
+- D4a: mean token log-probability of the sentence (low means suspicious).
+- D4b: lowest probability among the changed spans inside the sentence (geometric-mean token probability as in the word-level design; a sentence without a changed span gets 1 and is never flagged).
+Flag rule: a sentence is flagged if its score is at or below the 30th percentile of all dev sentence scores (so the flag rate is at most about 30%). Gate A: the lower bound of (recall minus random recall) above 0, as in 11.1, and the sentence-level AUC (low score = harmful sentence, 95% bootstrap over texts) with a lower bound above 0.5. D4a and D4b are judged separately. The contrastive score (loss with and without the source in context) is not part of this run. Omission tags are not counted. The threshold is set on the same dev sentences, so the screen is in-sample.
+
+### 11.5 Evaluation bug in the D4 screen (2026-10-31)
+Affected run: the first D4 run (started 17:28, finished 17:45; report overwritten, copy kept outside the repository). It computed the random-flag expectation over the unique sentences of a resampled set of texts but recall with their multiplicity, which biased the bootstrap difference upward: D4a showed +8 points [+8, +36] and "passes", with the interval starting at its own point estimate. Fix: the statistics sum per-text quantities with multiplicity. The corrected run (17:56) is the reported one: D4a +8 points [-2, +17], AUC 0.677 [0.605, 0.744], does not pass; D4b +2 points [-8, +12], AUC 0.555 [0.462, 0.651], does not pass. The rule of 11.4 is unchanged. Scores are cached in `results/dev24/d4_scores.json`. The D1/D2 screen (11.1) and the digit guard (11.2) were not affected: their per-text sums already used multiplicity.
+
+### 11.6 D5 entailment check: rule fixed on 2026-10-31, before any D5 score was computed
+Models. Primary: `cross-encoder/nli-deberta-v3-base` (Apache-2.0, about 184 M parameters, not gated; labels contradiction, entailment, neutral). Sensitivity: MiniCheck, variant `lytang/MiniCheck-RoBERTa-Large` (MIT, plain sequence classifier, not gated; the Flan-T5-Large variant needs the MiniCheck package and is not used). The CPU time per pair is measured on 5 dev texts first; if MiniCheck exceeds 2 s per pair on this laptop, the sensitivity run is dropped and the reason logged. Both models are fixed here and are not changed after scores are seen.
+Score per output sentence (C1 outputs, dev): for an aligned pair (same aligner as before, cosine at least 0.45), the minimum of the entailment probability source sentence -> output sentence (unsupported content) and output sentence -> source sentence (lost content). For an output sentence with no aligned source sentence, the entailment probability whole source -> that sentence (one direction only). For MiniCheck the supported probability is used in the same two directions.
+Flag rule: score at or below the 30th percentile of all dev sentence scores. Pass rule, as in 11.4: the lower bound of (recall - random recall) above 0 and the sentence-level AUC lower bound above 0.5, 95% bootstrap over texts, in-sample. Omission tags are not counted. Seconds per sentence are reported.
+
+### 11.7 D3 coverage check: rule fixed on 2026-10-31, before any D3 flag is computed
+Unit: source sentence (dev, C1 outputs). A source sentence is flagged if (a) no output sentence is aligned to it (cosine below 0.45 for every output sentence), or (b) its coverage is below 0.40. Coverage = share of the content lemmas of the source sentence (spaCy lemmas, lower-cased, nouns, verbs, adjectives, adverbs, numerals and proper nouns, no stop words) that occur as lemmas in the output sentences aligned to it. The value 0.40 was open when the rule was drafted and was set to 0.40 on 2026-10-31 before any coverage was computed; it may be amended before D3 is scored, with a dated entry here.
+Evaluation: recall on the 20 omission tags (severity 2-3) once their source sentence index is backfilled (`results/dev24/omission_backfill.csv`): a tag is caught if its source sentence is flagged. Flag rate = flagged source sentences / all source sentences, capped at 30% as for the other checks. Random control: flag the same number of source sentences per output at random, expected recall exact. Pass: the lower bound of (recall - random recall) above 0, 95% bootstrap over texts. Omission tags whose backfilled index is missing are reported separately.
+
+### 11.8 Exploratory combination and an extra D4a report (fixed 2026-10-31, before computing)
+Combination (exploratory, not a gate): all D1 flags, then the sentences with the lowest D4a scores are added until the total flag rate reaches 30%. If D1 alone is already at or above 30% (it was 31% after the extractor fix), nothing is added and the rate stays that of D1. Same pass rule as 11.4 (recall minus random with lower bound above 0, bootstrap over texts; the AUC condition does not apply to a union).
+Extra report: the sentence-level AUC of D4a separately for aligned and for unaligned output sentences, with 95% bootstrap intervals over texts.
