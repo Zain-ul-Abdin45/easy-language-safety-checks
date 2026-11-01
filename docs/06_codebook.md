@@ -1,6 +1,9 @@
-# Annotation codebook (draft v0.2.4)
+# Annotation codebook (v0.2.5, frozen)
 
-Status: draft, not frozen. Freeze before labelling starts and record the date here: ____-__-__.
+Status: frozen on 2026-10-31 for the held-out set. Any later change needs a new version, a date and a reason in the change log, and
+none may be made after held-out labelling has started. Open points at the end are not rule changes.
+v0.2.5 (2026-10-31) changes how span labels are made (section 1a). It applies to the held-out set and later. The dev set was
+labelled under v0.2.4 and is reported under that rule, with the v0.2.5 rule as a sensitivity analysis.
 Works with `src/annotate.py` (blind sheets in `results/`). Condition labels and probabilities are hidden.
 Design follows the outcome-based idea of Wu & Arase (few categories, no linguistic training needed, errors
 described by their effect on the reader). Our harm categories are written for onboarding texts where a reader
@@ -14,7 +17,7 @@ You do not label: harmless paraphrases, style, tone, register, or fluency.
 **One question decides harm:** would a reader who acts on the output do something different from a reader who
 acts on the source? If yes, it is harmful. If the answer is "only if they misread it", it is not.
 
-## 1. Unit 1: changed span (dev only, for the AUC check)
+## 1. Unit 1: changed span, rule v0.2.4 (used for the dev set)
 Sheet `annotate_spans.csv`, columns `harmful` and `discuss`. Judge the output span in its sentence against the
 source.
 
@@ -48,6 +51,21 @@ Pilot examples (from the pilot outputs; labels are draft positions, not ground t
 | floor warden → floor leader | `y`, `discuss` | the fire role may be lost; a reader may not know who to report to |
 | and → to | `f` | diff piece inside a rewritten sentence |
 | login → time, it asks | `f` | crosses a clause boundary |
+
+## 1a. Unit 1 from v0.2.5 (held-out and later; prospective)
+A span is no longer judged for harm separately. Label the output (Unit 2) first. The span label is then derived by script:
+- `harmful`: the quote of at least one severity 2-3 tag overlaps the span.
+- `harmless`: no severity 2-3 tag overlaps the span.
+- `f` (fragment): unchanged from v0.2.4; the annotator still marks it.
+- A span overlapped only by a quote of more than three words is left out of the AUC (neither class), consistent with the
+  reachability rule.
+- Severity 1 tags do not make a span harmful.
+- The `discuss` flag on spans is dropped. Use `discuss` on the output only.
+
+Why. In the dev set, 14 of the 32 spans labelled harmful in Unit 1 overlapped no severity 2-3 tag (11 no tag, 3 only
+severity 1), so the AUC used a broader definition of harm than the primary measure. Deriving the span label from the tags
+gives one source of truth and removes the span-harm labelling on held-out. The dev spans are not re-labelled by hand: the
+derived labels are computed by script and reported as a sensitivity analysis (`src/controls.py`, section 4 of its report).
 
 ## 2. Unit 2: output (all conditions, for harmful errors per 100 words)
 Sheet `annotate_outputs.csv`. Identical outputs across conditions are merged into one item.
@@ -112,7 +130,7 @@ Reported separately from harm, never added to the harm count.
 
 ## 4. Procedure
 1. Read the source, then the output. Apply the decision question (section 0).
-2. Spans: enter `y` / `n` / `f`. Outputs: list errors in the order they appear, using the seriousness order only
+2. Spans (v0.2.4: enter `y` / `n` / `f`; from v0.2.5: mark only fragments `f`). Outputs: list errors in the order they appear, using the seriousness order only
    to choose between two fitting categories, and copy a short quote for each.
 3. When unsure, enter your best guess and set `discuss`. Do not leave an item empty. Do not look up the
    condition.
@@ -170,3 +188,5 @@ Limits to state in the thesis
 | 2026-10-28 | v0.2.2: output tags are category, severity and quote (separated by a vertical bar); reachable is computed from the quote; roles primary, second, consistency |
 | 2026-10-28 | v0.2.3: quote occurrence number when a quote is not unique |
 | 2026-10-28 | v0.2.4: only severity 2–3 counts as harm; severity 1 is a minor note; all-tags sensitivity check; severity 1/2 agreement; pilot labels are development data |
+| 2026-10-31 | v0.2.5 FROZEN: no rule changed; the importer (`src/annotate.py`) now reads a spans sheet with a `fragment` column only and derives the span label from the severity 2-3 tags (`annotate.py derive` is a dry run). Dev labels stay under v0.2.4. |
+| 2026-10-31 | v0.2.5 (prospective, made after the dev results were seen; decided by the researcher): span labels are derived from severity 2–3 output tags instead of being judged separately; discuss dropped on spans; applies to held-out and later; dev reported under v0.2.4 with the v0.2.5 rule as a sensitivity analysis. Reason: 14 of 32 dev spans labelled harmful overlapped no severity 2–3 tag |

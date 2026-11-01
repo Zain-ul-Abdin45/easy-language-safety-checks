@@ -10,3 +10,5 @@ psycopg[binary]
 python-dotenv
 sentence-transformers   # sentence alignment and semantic similarity
 tabulate
+sentencepiece
+protobuf

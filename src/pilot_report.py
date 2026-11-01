@@ -3,6 +3,7 @@
 Run:  .venv/bin/python src/pilot_report.py [--texts 100 --seeds 3]
 Writes results/pilot_report.md and prints it.
 """
+import os
 import argparse
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ import verdict as verdict_mod
 from auc_decision import as_markdown, compute, sensitivity
 from db import connect
 
-OUT = Path(__file__).resolve().parents[1] / "results/pilot_report.md"
+OUT = Path(__file__).resolve().parents[1] / os.environ.get("ANNOTATE_DIR", "results") / "pilot_report.md"   # ANNOTATE_DIR keeps a second model apart
 
 
 def q(conn, sql):

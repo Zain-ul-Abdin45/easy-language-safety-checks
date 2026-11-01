@@ -30,3 +30,9 @@ data/raw/*
 *.log
 *.bak
 *.orig
+
+# local model weights (gated, large)
+models/
+
+# Scratch output of background runs
+nohup.out

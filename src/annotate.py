@@ -15,7 +15,10 @@ Export:  .venv/bin/python src/annotate.py export [--subset 0.2]
       Column `simplicity` (not harm): lexical, structural or both, when the output is harder than needed.
       Column `discuss`: y when unsure; the item goes to the second pass.
   results/annotate_spans.csv    one row per reachable changed span, probability hidden.
-      Fill column `harmful` with y, n or f.  y/n = harmful or not harmful; f = fragment (the diff cut a rewritten
+      Codebook v0.2.5 (held-out and later; default): column `fragment`, enter f only for a fragment, otherwise leave empty. The harmful
+      label is NOT typed: after the import it is derived from the severity 2-3 output tags (see derive_span_labels). Use
+      `export --span-rule v0.2.4` for the old sheet (dev set).
+      Codebook v0.2.4 (dev set): fill column `harmful` with y, n or f.  y/n = harmful or not harmful; f = fragment (the diff cut a rewritten
       sentence into pieces, so the span is not a word swap). Fragments are counted but left out of the AUC.
       Column `discuss`: y when unsure. See docs/06_codebook.md.
   --subset F also writes annotate_outputs_subset.csv / annotate_spans_subset.csv with a random fraction F of
@@ -28,6 +31,7 @@ Import:  .venv/bin/python src/annotate.py import --annotator NAME [--role primar
   consistency  the primary annotator's repeat a week later: same, agreement analysis only.
 """
 import argparse
+import os
 import csv
 import hashlib
 import random
@@ -40,7 +44,7 @@ import yaml
 from db import connect
 
 ROOT = Path(__file__).resolve().parents[1]
-RES = ROOT / "results"
+RES = ROOT / os.environ.get("ANNOTATE_DIR", "results")   # sheets go here; set ANNOTATE_DIR so a second model never overwrites the labelled sheets
 MAX_SPAN_TOKENS = yaml.safe_load(open(ROOT / "config/pilot.yaml"))["max_span_tokens"]
 CATS = {"meaning_change", "omission", "wrong_number_date_name", "hallucination",
         "altered_condition", "unclear_reference", "repetition", "other"}
@@ -88,21 +92,26 @@ def quote_reachable(output_text, quote_range, quote, span_strings):
     return any(s0 < q1 and q0 < s1 for t in span_strings if t for s0, s1 in find_all(out_n, norm(t)))
 
 
-def export(subset=None):
+def export(subset=None, prompt_version=None, span_rule="v0.2.5"):
     RES.mkdir(exist_ok=True)
     with connect() as conn:
-        rows = conn.execute("""SELECT co.base_output_id, co.output, t.body FROM condition_outputs co
-                               JOIN base_outputs b ON b.id=co.base_output_id JOIN texts t ON t.id=b.text_id""").fetchall()
+        pv = "" if prompt_version is None else "AND r.prompt_version = %s"   # only the runs of one prompt version
+        args = () if prompt_version is None else (prompt_version,)
+        rows = conn.execute(f"""SELECT co.base_output_id, co.output, t.body FROM condition_outputs co
+                               JOIN base_outputs b ON b.id=co.base_output_id JOIN runs r ON r.id=b.run_id
+                               JOIN texts t ON t.id=b.text_id WHERE true {pv}""", args).fetchall()
         uniq = {key(b, o): (s, o) for b, o, s in rows}
         items = list(uniq.items())
         random.Random(0).shuffle(items)
         out_rows = [[k, s, o, "", "", ""] for k, (s, o) in items]
-        spans = conn.execute("""SELECT cs.id, t.body, b.output, cs.source_span, cs.output_span FROM changed_spans cs
-                                JOIN base_outputs b ON b.id=cs.base_output_id JOIN texts t ON t.id=b.text_id
-                                WHERE cs.reachable ORDER BY random()""").fetchall()
-        span_rows = [[*r, "", ""] for r in spans]
+        spans = conn.execute(f"""SELECT cs.id, t.body, b.output, cs.source_span, cs.output_span FROM changed_spans cs
+                                JOIN base_outputs b ON b.id=cs.base_output_id JOIN runs r ON r.id=b.run_id
+                                JOIN texts t ON t.id=b.text_id
+                                WHERE cs.reachable {pv} ORDER BY random()""", args).fetchall()
+        span_rows = [[*r, "", ""] if span_rule == "v0.2.4" else [*r, ""] for r in spans]
     out_head = ["item", "source", "output", "errors", "simplicity", "discuss"]
-    span_head = ["span_id", "source_text", "output_text", "source_span", "output_span", "harmful", "discuss"]
+    span_head = ["span_id", "source_text", "output_text", "source_span", "output_span"] + (
+        ["harmful", "discuss"] if span_rule == "v0.2.4" else ["fragment"])
     files = [("annotate_outputs", out_head, out_rows), ("annotate_spans", span_head, span_rows)]
     if subset:
         rng = random.Random(1)
@@ -135,6 +144,40 @@ def parse_tags(val, item):
     return tags
 
 
+def derive_span_labels(conn, role="primary", write=True):
+    """Codebook v0.2.5, section 1a: the span label comes from the severity 2-3 output tags of the C1 output of the same base output.
+    harmful  = the quote of at least one tag with at most max_span_tokens words overlaps the span (an occurrence of its text in the output)
+    harmless = no severity 2-3 tag overlaps it
+    excluded = only a quote of more than max_span_tokens words overlaps it (neither class, harmful NULL), consistent with the reach rule.
+    Fragments (marked in the sheet) keep harmful NULL. Only spans whose C1 output was reviewed by this role are derived.
+    Returns {span_id: True/False/None}; with write=True stores them in span_labels (and changed_spans for the primary role)."""
+    c1 = conn.execute("""SELECT co.id, co.base_output_id, co.output FROM condition_outputs co WHERE co.condition='C1'
+                         AND EXISTS (SELECT 1 FROM output_reviews o WHERE o.condition_output_id=co.id AND o.rater_role=%s)""", (role,)).fetchall()
+    result = {}
+    for co_id, b, text in c1:
+        out_n = norm(text)
+        tags = []
+        for q, occ in conn.execute("""SELECT output_quote, quote_occurrence FROM harm_annotations WHERE condition_output_id=%s
+                                      AND rater_role=%s AND severity>=2 AND output_quote IS NOT NULL""", (co_id, role)).fetchall():
+            hits = find_all(out_n, norm(q))
+            if hits:
+                tags.append((hits[(occ or 1) - 1] if (occ or 1) <= len(hits) else hits[0], len(q.split()) <= MAX_SPAN_TOKENS))
+        for sid, span, frag in conn.execute("""SELECT id, output_span, fragment FROM changed_spans WHERE base_output_id=%s AND reachable""", (b,)).fetchall():
+            if role == "primary" and frag:
+                result[sid] = None; continue
+            occs = find_all(out_n, norm(span)) if span else []
+            over = [short for (q0, q1), short in tags if any(s0 < q1 and q0 < s1 for s0, s1 in occs)]
+            result[sid] = True if any(over) else (None if over else False)
+    if write:
+        for sid, v in result.items():
+            conn.execute("""INSERT INTO span_labels(span_id,annotator,rater_role,harmful,fragment,discuss) VALUES (%s,%s,%s,%s,%s,false)
+                            ON CONFLICT (span_id, annotator, rater_role) DO UPDATE SET harmful=EXCLUDED.harmful""",
+                         (sid, "derived-v0.2.5", role, v, False))
+            if role == "primary":
+                conn.execute("UPDATE changed_spans SET harmful_gold=%s, labelled_at=now() WHERE id=%s", (v, sid))
+    return result
+
+
 def import_(annotator, role="primary", outputs_file=None, spans_file=None):
     outputs_file = Path(outputs_file) if outputs_file else RES / "annotate_outputs.csv"
     spans_file = Path(spans_file) if spans_file else RES / "annotate_spans.csv"
@@ -164,7 +207,7 @@ def import_(annotator, role="primary", outputs_file=None, spans_file=None):
             return span_cache[(b, cond)]
 
         n = 0
-        for r in csv.DictReader(open(outputs_file)):
+        for r in csv.DictReader(open(outputs_file, encoding="utf-8-sig")):
             val = r["errors"].strip()
             if not val:
                 continue
@@ -199,7 +242,25 @@ def import_(annotator, role="primary", outputs_file=None, spans_file=None):
                                   quote_reachable(output_text, qrange, quote, spans_for(co_id)), sev))
                     n += 1
         m = 0
-        for r in csv.DictReader(open(spans_file)):
+        span_rows = list(csv.DictReader(open(spans_file, encoding="utf-8-sig"))) if spans_file.exists() else []
+        legacy = bool(span_rows) and "harmful" in span_rows[0]
+        if not legacy:      # codebook v0.2.5: only fragments are typed, harm is derived from the output tags afterwards
+            for r in span_rows:
+                v = (r.get("fragment") or "").strip().lower()
+                if v not in ("", "f", "y"):
+                    sys.exit(f"Span {r['span_id']}: fragment must be f (or empty), got '{v}'")
+                if role == "primary":
+                    conn.execute("UPDATE changed_spans SET fragment=%s, labelled_by=%s, labelled_at=now() WHERE id=%s",
+                                 (v != "", annotator, int(r["span_id"])))
+                conn.execute("""INSERT INTO span_labels(span_id,annotator,rater_role,harmful,fragment,discuss) VALUES (%s,%s,%s,NULL,%s,false)
+                                ON CONFLICT (span_id, annotator, rater_role) DO UPDATE SET fragment=EXCLUDED.fragment, labelled_at=now()""",
+                             (int(r["span_id"]), annotator, role, v != ""))
+                m += 1
+            if m:
+                derived = derive_span_labels(conn, role)
+                print(f"[{role}] derived span labels (v0.2.5): {sum(v is True for v in derived.values())} harmful, "
+                      f"{sum(v is False for v in derived.values())} harmless, {sum(v is None for v in derived.values())} excluded or fragment")
+        for r in (span_rows if legacy else []):
             v = r["harmful"].strip().lower()
             if not v:
                 continue
@@ -222,11 +283,19 @@ def import_(annotator, role="primary", outputs_file=None, spans_file=None):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["export", "import"])
+    ap.add_argument("cmd", choices=["export", "import", "derive"])
     ap.add_argument("--annotator", default="pilot")
     ap.add_argument("--role", choices=ROLES, default="primary")
     ap.add_argument("--subset", type=float, default=None, help="export: also write a random fraction for the second person")
+    ap.add_argument("--prompt-version", default=None, help="export: only the runs of this prompt version (for example dev-v1)")
+    ap.add_argument("--span-rule", choices=["v0.2.5", "v0.2.4"], default="v0.2.5", help="export: span sheet of codebook v0.2.5 (fragments only) or v0.2.4 (harmful y/n/f)")
     ap.add_argument("--outputs", default=None, help="import: path of the outputs sheet")
     ap.add_argument("--spans", default=None, help="import: path of the spans sheet")
     a = ap.parse_args()
-    export(a.subset) if a.cmd == "export" else import_(a.annotator, a.role, a.outputs, a.spans)
+    if a.cmd == "derive":      # dry run: counts only, nothing is written
+        with connect() as c:
+            d = derive_span_labels(c, a.role, write=False)
+        print(f"derived (not stored): {sum(v is True for v in d.values())} harmful, {sum(v is False for v in d.values())} harmless, "
+              f"{sum(v is None for v in d.values())} excluded or fragment, of {len(d)} spans")
+    else:
+        export(a.subset, a.prompt_version, a.span_rule) if a.cmd == "export" else import_(a.annotator, a.role, a.outputs, a.spans)

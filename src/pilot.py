@@ -1,11 +1,13 @@
 """Pilot run: generate once per text and seed, apply C1-C5 to the same output, store everything.
 
 Run:  .venv/bin/python src/pilot.py [--limit N] [--seeds 1 2]
-Settings: config/pilot.yaml. Writes to database easylang_p3, schema p3.
+Settings: config/pilot.yaml (or the file in PILOT_CONFIG). Writes to database easylang_p3, schema p3
+(or DB_SCHEMA).
 """
 from __future__ import annotations
 
 import argparse
+import os
 import difflib
 import json
 import math
@@ -25,7 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from db import connect
 
 ROOT = Path(__file__).resolve().parents[1]
-CFG = yaml.safe_load(open(ROOT / "config/pilot.yaml"))
+CFG = yaml.safe_load(open(ROOT / os.environ.get("PILOT_CONFIG", "config/pilot.yaml")))
 NLP = spacy.load("en_core_web_sm")
 EMB = SentenceTransformer(CFG["align_model"], device="cpu")
 PREAMBLE = re.compile(r"^\s*(here('s| is)[^\n]*?:|sure[^\n]*?:)\s*", re.I)
@@ -53,8 +55,9 @@ Text:
 
 # ---------------------------------------------------------------- model
 def load_model():
-    tok = AutoTokenizer.from_pretrained(CFG["model"])
-    model = AutoModelForCausalLM.from_pretrained(CFG["model"], dtype=getattr(torch, CFG["dtype"]))
+    path = str(ROOT / CFG["model_path"]) if CFG.get("model_path") else CFG["model"]   # local copy of a gated model; CFG["model"] stays the recorded name
+    tok = AutoTokenizer.from_pretrained(path)
+    model = AutoModelForCausalLM.from_pretrained(path, dtype=getattr(torch, CFG["dtype"]))
     model.to(CFG["device"]).eval()
     return tok, model
 

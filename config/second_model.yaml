@@ -1,0 +1,31 @@
+# Second-model check (dev split only, descriptive). Not frozen. Run only after a GO or INCONCLUSIVE decision for Qwen.
+# Run:  PILOT_CONFIG=config/second_model.yaml DB_SCHEMA=p3_second .venv/bin/python src/pilot.py
+# Everything except `model` is identical to config/pilot.yaml, so differences come from the model.
+#
+# Selection criteria, fixed before any output of this model exists:
+#   open weights; 1 to 4 billion parameters; a family other than Qwen; runs on the same laptop CPU (float32);
+#   licence allows research use.
+# Choice: Llama 3.2 1B Instruct (about 1.2B parameters). Reason: Hayakawa et al. (INLG 2025) tested Llama 3.2 1B next to
+#   Qwen 2.5 1.5B (Sec. 3.3, p. 4; Appendix C, p. 13), so both of our AUCs can be set beside both of theirs
+#   (Qwen 0.679 / 0.707, Llama 0.510 / 0.797 in English, Table 4, p. 7). Their Llama 5-shot value is near chance, so a weak
+#   result for this model is anticipated, not a surprise.
+# Not chosen: Gemma 2 2B (Hayakawa excluded it for latency on a low-end CPU); TinyLlama 1.1B (too weak to test the signal);
+#   Phi-4-mini (about 15 GB in float32).
+# Caveats: Hayakawa used the base models, we use the instruct variants (as for Qwen). The model is gated: accept the Meta
+#   licence on huggingface.co and log in (huggingface-cli login) before the first run.
+model: meta-llama/Llama-3.2-1B-Instruct
+model_path: models/llama-3.2-1b   # local copy (gated; downloaded 2026-10-31 after Meta approved access); git-ignored
+device: cpu
+dtype: float32
+seeds: [1, 2]
+temperature: 0.3
+top_p: 0.9
+max_new_tokens: 450
+prompt_version: dev-v1
+target_level: easy-to-read (working)
+prob_threshold: 0.30
+max_span_tokens: 3
+align_model: sentence-transformers/all-MiniLM-L6-v2
+min_sentence_similarity: 0.45
+long_sentence_words: 15
+texts: [data/dev/pilot_texts.jsonl, data/dev/dev_texts.jsonl]
