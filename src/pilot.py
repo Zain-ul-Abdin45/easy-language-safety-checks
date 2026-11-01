@@ -282,6 +282,43 @@ def run_conditions(spans, output, tok_spans):
     return res
 
 
+def generate_output(tok, model, body: str, seed: int):
+    """Base output of one text. Default: one generation for the whole text (generation: whole).
+    generation: sentence (isolated experiment S, protocol 11.15): each source sentence is rewritten on its own with the same
+    instruction, seed and sampling settings, and the rewrites are joined with a space. Returns the output text, its token spans,
+    the number of generated tokens, whether any generation hit the token limit, and the generation and scoring seconds."""
+    if CFG.get("generation", "whole") == "whole":
+        prompt_ids, gen_ids, gen_s = generate(tok, model, body, seed)
+        t0 = time.perf_counter()
+        output, tok_spans = token_probs(tok, model, prompt_ids, gen_ids)
+        score_s = time.perf_counter() - t0
+        m = PREAMBLE.match(output)          # drop "Here's the rewritten text:" lead-ins
+        stripped = bool(m)
+        if m:
+            cut = m.end()
+            output = output[cut:]
+            tok_spans = [(s - cut, e - cut, p) for s, e, p in tok_spans if e > cut]
+        return output, tok_spans, len(gen_ids), len(gen_ids) >= CFG["max_new_tokens"], gen_s, score_s, stripped
+    parts, spans_all, n_tok, trunc, gen_s, score_s, stripped, offset = [], [], 0, False, 0.0, 0.0, False, 0
+    for sent in [x.text.strip() for x in NLP(body).sents if any(not t.is_punct and not t.is_space for t in x)]:
+        prompt_ids, gen_ids, g = generate(tok, model, sent, seed)
+        t0 = time.perf_counter()
+        out, tspans = token_probs(tok, model, prompt_ids, gen_ids)
+        score_s += time.perf_counter() - t0
+        m = PREAMBLE.match(out)
+        if m:
+            cut = m.end(); out = out[cut:]; stripped = True
+            tspans = [(a - cut, b - cut, p) for a, b, p in tspans if b > cut]
+        out_s = out.strip()
+        lead = len(out) - len(out.lstrip())
+        if parts:
+            offset += 1                      # the joining space
+        spans_all += [(a - lead + offset, b - lead + offset, p) for a, b, p in tspans if b > lead]
+        parts.append(out_s); offset += len(out_s)
+        n_tok += len(gen_ids); trunc = trunc or len(gen_ids) >= CFG["max_new_tokens"]; gen_s += g
+    return " ".join(parts), spans_all, n_tok, trunc, gen_s, score_s, stripped
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int)
@@ -300,17 +337,8 @@ def main():
                  f"Apple M3 Pro, CPU-only, {torch.get_num_threads()} threads, {CFG['dtype']}")).fetchone()[0]
             n_preamble = 0
             for r in texts:
-                prompt_ids, gen_ids, gen_s = generate(tok, model, r["body"], seed)
-                t0 = time.perf_counter()
-                output, tok_spans = token_probs(tok, model, prompt_ids, gen_ids)
-                score_s = time.perf_counter() - t0
-                m = PREAMBLE.match(output)          # drop "Here's the rewritten text:" lead-ins
-                if m:
-                    cut = m.end()
-                    output = output[cut:]
-                    tok_spans = [(s - cut, e - cut, p) for s, e, p in tok_spans if e > cut]
-                    n_preamble += 1
-                truncated = len(gen_ids) >= CFG["max_new_tokens"]   # cut off by the token limit: rater would see a fake omission
+                output, tok_spans, n_tokens, truncated, gen_s, score_s, stripped = generate_output(tok, model, r["body"], seed)
+                n_preamble += stripped          # lead-ins like "Here's the rewritten text:" were dropped
                 spans = align(r["body"], output)
                 conds = run_conditions(spans, output, tok_spans)
 
@@ -342,8 +370,8 @@ def main():
                         conn.execute("INSERT INTO grammar_flags VALUES (%s,%s,%s,%s)", (co_id, rule, n, ex))
                 conn.commit()
                 n_reach = sum(s.reachable for s in spans)
-                print(f"seed {seed} {r['id']}: {len(gen_ids)} tokens in {gen_s:.1f}s "
-                      f"({len(gen_ids) / gen_s:.1f} tok/s), spans {n_reach}/{len(spans)} reachable"
+                print(f"seed {seed} {r['id']}: {n_tokens} tokens in {gen_s:.1f}s "
+                      f"({n_tokens / gen_s:.1f} tok/s), spans {n_reach}/{len(spans)} reachable"
                       + ("  TRUNCATED at max_new_tokens" if truncated else ""), flush=True)
             print(f"seed {seed}: stripped a lead-in line from {n_preamble} outputs")
     print("done")

@@ -75,23 +75,27 @@ def main():
     # ---- 11.8 combination and aligned/unaligned AUC
     d4 = json.loads((outdir / "d4_scores.json").read_text())["sents"]
     d5 = json.loads((outdir / "d5_scores_primary.json").read_text())["sents"]
-    sents = [dict(x, unit=tuple(x["unit"])) for x in d4]
-    assert [tuple(x["unit"]) for x in d4] == [tuple(x["unit"]) for x in d5], "sentence order differs between D4 and D5 caches"
-    for s, x in zip(sents, d5):
-        s["aligned"] = x["aligned"]
-    d1 = []
-    for key in sorted(ukey):
-        d1 += flags(ukey[key])[0]
-    # d4 sentences come in the order of load(), which is sorted by text id and seed
-    order = [tuple(s["unit"]) for s in sents]
-    assert len(d1) == len(sents) and order == sorted(order), "D1 flag order does not match"
-    for s, f in zip(sents, d1):
-        s["c"] = -100.0 if f else s["a"]
+    d5_by = defaultdict(list)
+    for x in d5:
+        d5_by[tuple(x["unit"])].append(x)
+    d4_by = defaultdict(list)
+    for x in d4:
+        d4_by[tuple(x["unit"])].append(dict(x, unit=tuple(x["unit"])))
+    sents, d1, skipped = [], [], 0
+    for key_ in sorted(d4_by):          # units whose regenerated text did not match the stored output are absent from D4
+        a, b = d4_by[key_], d5_by[key_]
+        if len(a) != len(b):
+            skipped += 1; continue
+        f1 = flags(ukey[key_])[0]
+        for s_, x, f in zip(a, b, f1):
+            s_["aligned"] = x["aligned"]; s_["c"] = -100.0 if f else s_["a"]
+            sents.append(s_); d1.append(f)
     r = evaluate(sents, "c", boot, rng)
     L += ["## Exploratory combination (protocol 11.8): D1 flags, then lowest D4a up to 30%", "",
           f"Flagged {r['F']} / {r['n']} ({100 * r['rate']:.0f}%); recall {100 * r['rec']:.0f}%, random {100 * r['rnd']:.0f}%, difference "
           f"{100 * r['diff']:+.0f} points [{100 * r['lo']:+.0f}, {100 * r['hi']:+.0f}]. "
-          f"{'Passes' if r['lo'] > 0 and r['rate'] <= 0.30 + 1e-9 else 'Does not pass'} the recall-minus-random rule. Exploratory, not a gate.", ""]
+          f"{'Passes' if r['lo'] > 0 and r['rate'] <= 0.30 + 1e-9 else 'Does not pass'} the recall-minus-random rule. Exploratory, not a gate."
+          + (f" {skipped} units without D4 scores are left out." if skipped else ""), ""]
     L += ["## D4a sentence-level AUC, aligned vs unaligned output sentences (protocol 11.8)", "",
           "| group | sentences | harmful | AUC [95%] |", "|---|---|---|---|"]
     for name, flagv in [("aligned", True), ("unaligned", False)]:
