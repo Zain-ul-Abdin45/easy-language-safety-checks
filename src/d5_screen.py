@@ -36,7 +36,14 @@ LOCAL = {"primary": "models/nli-deberta-v3-base", "minicheck": "models/minicheck
 def load_model(key):
     name, idx = MODELS[key]
     path = str(ROOT / LOCAL[key]) if (ROOT / LOCAL[key] / "config.json").exists() else name
-    return AutoTokenizer.from_pretrained(path), AutoModelForSequenceClassification.from_pretrained(path).eval(), idx
+    tok, model = AutoTokenizer.from_pretrained(path), AutoModelForSequenceClassification.from_pretrained(path).eval()
+    if key == "primary":   # take the index from the model's own label map instead of assuming a position
+        names = {int(i): n.lower() for i, n in model.config.id2label.items()}
+        idx = next(i for i, n in names.items() if n == "entailment")
+        assert idx == MODELS[key][1], f"entailment index is {idx}, expected {MODELS[key][1]}; D5 scores would be wrong"
+    else:   # MiniCheck config has no label names; index 1 is checked by tests/test_d5_labels.py
+        assert set(model.config.id2label.values()) == {"0", "1"} and idx == 1
+    return tok, model, idx
 
 
 @torch.no_grad()

@@ -26,15 +26,19 @@ from pilot import NLP, generate, load_model, token_probs
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def collect(conn, tok, model):
+def collect(conn, tok, model, scorer=None):
+    """scorer (optional, added for the Llama retokenization sensitivity): scorer(body, seed, out) -> (raw text, token spans) in place of regenerating. Default = v2."""
     rows = conn.execute("""SELECT co.id, b.id, b.text_id, r.seed, t.body, co.output FROM condition_outputs co
                            JOIN base_outputs b ON b.id=co.base_output_id JOIN runs r ON r.id=b.run_id JOIN texts t ON t.id=b.text_id
                            WHERE co.condition='C1' AND t.split='dev' ORDER BY b.text_id, r.seed""").fetchall()
     sents = []   # one dict per non-empty sentence
     mismatch = 0
     for n, (co_id, b_id, text_id, seed, body, out) in enumerate(rows, 1):
-        prompt_ids, gen_ids, _ = generate(tok, model, body, seed)
-        raw, tspans = token_probs(tok, model, prompt_ids, gen_ids)
+        if scorer is None:
+            prompt_ids, gen_ids, _ = generate(tok, model, body, seed)
+            raw, tspans = token_probs(tok, model, prompt_ids, gen_ids)
+        else:
+            raw, tspans = scorer(body, seed, out)
         off = raw.find(out.strip())
         if off < 0:
             mismatch += 1
@@ -65,10 +69,15 @@ def collect(conn, tok, model):
     return sents, mismatch
 
 
-def evaluate(sents, key, boot, rng):
+def evaluate(sents, key, boot, rng, flag_fn=None):
+    """flag_fn (optional, added for the tie-rule sensitivity line): maps the score array to a boolean flag array. Default = the v2 rule."""
     score = np.array([s[key] for s in sents])
-    thr = np.percentile(score, 30)
-    flag = score <= thr
+    if flag_fn is None:
+        thr = np.percentile(score, 30)
+        flag = score <= thr
+    else:
+        flag = flag_fn(score)
+        thr = float(score[flag].max()) if flag.any() else float("nan")
     harm = np.array([s["harmful"] for s in sents])
     texts = sorted({s["text"] for s in sents})
     units = defaultdict(list)
