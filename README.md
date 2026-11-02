@@ -39,17 +39,17 @@ Qwen simplifies each onboarding-style text once per seed (1 and 2); five conditi
 | `wordlists/` | Approved list (Dale-Chall easy words) and the replacement table |
 | `src/` | Pipeline (generation, alignment, checks, report), annotation import and export, AUC decision, Gate A screens (`d3_screen.py`, `d4_screen.py`, `d5_screen.py`, `digit_guard.py`), `power_sim.py`, experiment S |
 | `results/` | Summaries at the top; per-run reports in `dev24/`, `llama_dev24/`, `second_model/`, `sbs/`; `*.sql` backups (git-ignored) |
-| `db/schema.sql` | Database schema and result views |
+| `db/` | `schema.sql` (base schema and result views, no DROP), `migrations/` (numbered changes), `reset_dev_only.sql` (guarded wipe of one unlabelled dev schema) |
 
 ## Plan (hours are a planning assumption)
 | Phase | Months | Hours |
 |---|---|---:|
-| 1 Exposé, protocol, codebook freeze | M1 | 80 |
-| 2 Dev labelling, go/no-go, sentence-level screen, intermediate report | M1-M2 | 190 |
-| 3 Write the 60 held-out texts, baselines, freeze | M2-M3 | 120 |
-| 4 Held-out run, annotation, re-label, second-person check | M4 | 110 |
-| 5 Analysis, controls, sensitivity runs, verdict | M4-M5 | 130 |
-| 6 Report and presentation | M5-M6 | 270 |
+| 1 Exposé, protocol, codebook freeze | M1 | 110 |
+| 2 Dev labelling, go/no-go, sentence-level screen, intermediate report | M1-M2 | 110 |
+| 3 Write the 60 held-out texts, baselines, freeze | M2-M3 | 180 |
+| 4 Held-out run, annotation, re-label, second-person check | M4 | 170 |
+| 5 Analysis, controls, sensitivity runs, verdict | M4-M5 | 160 |
+| 6 Report and presentation (drafted in parallel from M3) | M3-M6 | 170 |
 
 ## Open decisions (user and supervisor)
 1. Framing: base design with detection exploratory, detection as a research question, or label S.
@@ -66,7 +66,8 @@ Qwen simplifies each onboarding-style text once per seed (1 and 2); five conditi
 
 ```
 .venv/bin/python src/check_env.py              # verify environment and database
-psql -d easylang_p3 -f db/schema.sql           # rebuild schema (DELETES all data in that schema; back up first)
+python src/migrate.py --schema p3                # create or upgrade a schema: base file once, then db/migrations/*.sql; never drops anything
+python src/migrate.py --schema p3 --status       # list what is applied
 ```
 
 Note: `v_c5_vs_c1` and `src/verdict.py` implement the original C5-against-C1 verdict. After the NO-GO the primary comparison is C3 against C1 (protocol 11.10); the views have not been changed.

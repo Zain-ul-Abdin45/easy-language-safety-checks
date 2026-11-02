@@ -24,7 +24,7 @@ Protected items may list alternatives separated by `|` (e.g. `three|3`).
 .venv/bin/python src/annotate.py import --annotator <your name>
 .venv/bin/python src/pilot_report.py                # now with AUC and C5 vs C1 verdict
 ```
-To start again, rebuild the schema: `psql -d easylang_p3 -f db/schema.sql` (deletes all p3 data).
+To create or upgrade a schema: `.venv/bin/python src/migrate.py --schema <name>` (never deletes data). To start a throwaway dev schema again, `db/reset_dev_only.sql` wipes it, but only if `ALLOW_DEV_RESET=<name>` is set and the schema holds no labels; labelled schemas are restored from a `pg_dump`, never reset.
 
 ## Pilot implementation choices (to confirm or change before freezing)
 | Part | Pilot choice | Why / open point |
