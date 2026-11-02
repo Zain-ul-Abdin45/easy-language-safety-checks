@@ -1,13 +1,17 @@
--- Project 3 experiment database: easylang_p3
--- Answers: how far does each condition reach the memo's success criteria?
--- Re-runnable: drops and recreates the schema p3.
+-- Project 3 experiment database: base schema (version 0, the v2 state).
+-- Safe to re-run: every statement is CREATE ... IF NOT EXISTS / OR REPLACE / ON CONFLICT DO NOTHING. It never drops anything.
+-- Apply with  .venv/bin/python src/migrate.py --schema <name>   (creates the schema, runs this file, then db/migrations/*.sql in order).
+-- Direct psql use needs the schema chosen first:  PGOPTIONS="-c search_path=<name>" psql -d easylang_p3 -f db/schema.sql
+-- To wipe a dev schema on purpose, see db/reset_dev_only.sql. Held-out data lives in its own schema (p3_heldout), created at the freeze.
 
-DROP SCHEMA IF EXISTS p3 CASCADE;
-CREATE SCHEMA p3;
-SET search_path TO p3;
+DO $$ BEGIN
+  IF current_schema() IN ('public', 'pg_catalog') THEN
+    RAISE EXCEPTION 'search_path is not set to a project schema; refusing to create tables in %', current_schema();
+  END IF;
+END $$;
 
 -- ---------- Materials ----------
-CREATE TABLE texts (
+CREATE TABLE IF NOT EXISTS texts (
   id            text PRIMARY KEY,                 -- e.g. T001
   source        text NOT NULL,
   url           text,
@@ -21,7 +25,7 @@ CREATE TABLE texts (
   collected_on  date DEFAULT current_date
 );
 
-CREATE TABLE protected_items (                    -- names, dates, numbers, conditions, actions
+CREATE TABLE IF NOT EXISTS protected_items (                    -- names, dates, numbers, conditions, actions
   id       serial PRIMARY KEY,
   text_id  text NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
   kind     text NOT NULL CHECK (kind IN ('name','date','number','deadline','condition','action','other')),
@@ -29,7 +33,7 @@ CREATE TABLE protected_items (                    -- names, dates, numbers, cond
 );
 
 -- ---------- Generation ----------
-CREATE TABLE runs (
+CREATE TABLE IF NOT EXISTS runs (
   id              serial PRIMARY KEY,
   model           text NOT NULL,                  -- Qwen/Qwen2.5-1.5B-Instruct
   backend         text NOT NULL,                  -- transformers / ollama
@@ -44,7 +48,7 @@ CREATE TABLE runs (
   UNIQUE (model, seed, prompt_version)            -- a rerun must not silently double the outputs
 );
 
-CREATE TABLE base_outputs (                       -- one per text x run (seed)
+CREATE TABLE IF NOT EXISTS base_outputs (                       -- one per text x run (seed)
   id           serial PRIMARY KEY,
   run_id       int  NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   text_id      text NOT NULL REFERENCES texts(id),
@@ -55,7 +59,7 @@ CREATE TABLE base_outputs (                       -- one per text x run (seed)
   UNIQUE (run_id, text_id)
 );
 
-CREATE TABLE conditions (
+CREATE TABLE IF NOT EXISTS conditions (
   code         text PRIMARY KEY,
   description  text NOT NULL
 );
@@ -64,10 +68,11 @@ INSERT INTO conditions VALUES
  ('C2','Probability: low-confidence changes reverted'),
  ('C3','Lookup: off-list changes replaced or reverted'),
  ('C4','Lookup + grammar'),
- ('C5','Probability, then lookup, then grammar');
+ ('C5','Probability, then lookup, then grammar')
+ON CONFLICT DO NOTHING;
 
 -- ---------- Alignment and checks ----------
-CREATE TABLE changed_spans (
+CREATE TABLE IF NOT EXISTS changed_spans (
   id              serial PRIMARY KEY,
   base_output_id  int NOT NULL REFERENCES base_outputs(id) ON DELETE CASCADE,
   sentence_idx    int,
@@ -85,7 +90,7 @@ CREATE TABLE changed_spans (
 
 -- Every span label from every rater round. changed_spans.harmful_gold holds the primary label only;
 -- second-person and consistency labels live here and feed the agreement analysis, never the views.
-CREATE TABLE span_labels (
+CREATE TABLE IF NOT EXISTS span_labels (
   span_id      int  NOT NULL REFERENCES changed_spans(id) ON DELETE CASCADE,
   annotator    text NOT NULL,
   rater_role   text NOT NULL CHECK (rater_role IN ('primary','second','consistency')),
@@ -96,7 +101,7 @@ CREATE TABLE span_labels (
   PRIMARY KEY (span_id, annotator, rater_role)
 );
 
-CREATE TABLE span_actions (
+CREATE TABLE IF NOT EXISTS span_actions (
   span_id     int  NOT NULL REFERENCES changed_spans(id) ON DELETE CASCADE,
   condition   text NOT NULL REFERENCES conditions(code),
   action      text NOT NULL CHECK (action IN ('keep','revert','replace','flag')),
@@ -104,7 +109,7 @@ CREATE TABLE span_actions (
   PRIMARY KEY (span_id, condition)
 );
 
-CREATE TABLE condition_outputs (
+CREATE TABLE IF NOT EXISTS condition_outputs (
   id                   serial PRIMARY KEY,
   base_output_id       int  NOT NULL REFERENCES base_outputs(id) ON DELETE CASCADE,
   condition            text NOT NULL REFERENCES conditions(code),
@@ -120,7 +125,7 @@ CREATE TABLE condition_outputs (
 );
 
 -- ---------- Annotation (blind) ----------
-CREATE TABLE harm_annotations (
+CREATE TABLE IF NOT EXISTS harm_annotations (
   id                   serial PRIMARY KEY,
   condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
   annotator            text NOT NULL,
@@ -139,7 +144,7 @@ CREATE TABLE harm_annotations (
 
 -- One row per output a rater has reviewed, including outputs with no error ("none"), so that
 -- "reviewed, no harm" can be told apart from "not reviewed yet".
-CREATE TABLE output_reviews (
+CREATE TABLE IF NOT EXISTS output_reviews (
   condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
   annotator            text NOT NULL,
   rater_role           text NOT NULL CHECK (rater_role IN ('primary','second','consistency')),
@@ -148,7 +153,7 @@ CREATE TABLE output_reviews (
 );
 
 -- Non-harm flags per output: insufficient simplification (tracked apart from harm) and "discuss".
-CREATE TABLE output_flags (
+CREATE TABLE IF NOT EXISTS output_flags (
   id                   serial PRIMARY KEY,
   condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
   annotator            text NOT NULL,
@@ -158,7 +163,7 @@ CREATE TABLE output_flags (
 );
 
 -- ---------- Criteria (fill thresholds before the held-out run) ----------
-CREATE TABLE success_criteria (
+CREATE TABLE IF NOT EXISTS success_criteria (
   key          text PRIMARY KEY,
   threshold    numeric,
   description  text NOT NULL
@@ -169,10 +174,11 @@ INSERT INTO success_criteria VALUES
  ('tau_max_harmless_reverted', 0.20, 'PRELIMINARY: tau for C2 is set on dev as the largest value that reverts at most this share of harmless (labelled n) dev spans'),
  ('max_simplicity_flag_increase', 0.10, 'PRELIMINARY: C5 may have at most this many percentage points more outputs flagged for insufficient simplification than C1 (human guard, independent of FKGL)'),
  ('auc_inconclusive_point',  0.60, 'INCONCLUSIVE if AUC point estimate is at least this but the lower bound is not above auc_go_lower'),
- ('max_post_seconds',        NULL, 'Optional: max extra seconds per text the checks may add');
+ ('max_post_seconds',        NULL, 'Optional: max extra seconds per text the checks may add')
+ON CONFLICT DO NOTHING;
 
 -- ---------- Project feasibility ----------
-CREATE TABLE milestones (
+CREATE TABLE IF NOT EXISTS milestones (
   month           text PRIMARY KEY,
   sort            int  NOT NULL,
   planned_hours   int  NOT NULL,
@@ -185,9 +191,10 @@ INSERT INTO milestones VALUES
  ('January', 3,160,'Checks implemented, go/no-go of probability signal, pilot ready',false),
  ('February',4,200,'Pilot across all five conditions',false),
  ('March',   5,200,'Analysis and March review',false),
- ('April',   6,140,'Submission and reproducibility package',false);
+ ('April',   6,140,'Submission and reproducibility package',false)
+ON CONFLICT DO NOTHING;
 
-CREATE TABLE work_log (
+CREATE TABLE IF NOT EXISTS work_log (
   id      serial PRIMARY KEY,
   day     date NOT NULL DEFAULT current_date,
   month   text NOT NULL REFERENCES milestones(month),
@@ -198,7 +205,7 @@ CREATE TABLE work_log (
 -- ================= Views: "to what extent can we achieve it?" =================
 
 -- Exact per-condition metrics (no double counting of words).
-CREATE VIEW v_condition_metrics AS
+CREATE OR REPLACE VIEW v_condition_metrics AS
 WITH per_output AS (
   SELECT co.id, co.condition, r.seed, t.split, co.word_count, co.fkgl, t.fkgl AS src_fkgl,
          co.protected_preserved, co.protected_total, co.post_seconds, b.gen_seconds, b.peak_mem_mb, co.flagged,
@@ -228,7 +235,7 @@ FROM per_output
 GROUP BY condition, seed, split;
 
 -- Share of changed spans the word-level checks can reach.
-CREATE VIEW v_reach AS
+CREATE OR REPLACE VIEW v_reach AS
 SELECT r.seed, t.split,
        count(*)                                   AS changed_spans,
        round(avg(cs.reachable::int), 3)           AS share_reachable
@@ -243,7 +250,7 @@ GROUP BY r.seed, t.split;
 -- POINT ESTIMATE ONLY. The bootstrap interval over texts and the go / inconclusive / no-go decision
 -- (protocol section 6) are computed by src/auc_decision.py, which also prints in the pilot report.
 -- Fragments (f) and unlabelled spans are excluded.
-CREATE VIEW v_probability_auc AS
+CREATE OR REPLACE VIEW v_probability_auc AS
 WITH s2 AS (
   SELECT cs.id, b.text_id
   FROM changed_spans cs
@@ -271,7 +278,7 @@ SELECT (SELECT count(*) FROM s WHERE harmful_gold)     AS n_harmful,
 FROM pairs;
 
 -- Main verdict: C5 vs C1 per seed, against the memo's three criteria.
-CREATE VIEW v_c5_vs_c1 AS
+CREATE OR REPLACE VIEW v_c5_vs_c1 AS
 WITH m AS (SELECT * FROM v_condition_metrics)
 SELECT c1.seed, c1.split,
        c1.harm_per_100w AS c1_harm, c5.harm_per_100w AS c5_harm,
@@ -294,7 +301,7 @@ FROM m c1 JOIN m c5 ON c5.seed = c1.seed AND c5.split = c1.split
 WHERE c1.condition = 'C1' AND c5.condition = 'C5';
 
 -- Stability: same verdict on every seed of the held-out split?
-CREATE VIEW v_stability AS
+CREATE OR REPLACE VIEW v_stability AS
 SELECT split,
        count(*)                          AS seeds,
        count(DISTINCT verdict)           AS distinct_verdicts,
@@ -307,7 +314,7 @@ FROM v_c5_vs_c1
 GROUP BY split;
 
 -- Project feasibility: hours spent against plan.
-CREATE VIEW v_progress AS
+CREATE OR REPLACE VIEW v_progress AS
 SELECT m.month, m.planned_hours,
        coalesce(sum(w.hours),0)                                   AS hours_spent,
        round(100.0 * coalesce(sum(w.hours),0) / m.planned_hours,1) AS pct_of_plan,
@@ -317,7 +324,7 @@ GROUP BY m.month, m.sort, m.planned_hours, m.done, m.main_output
 ORDER BY m.sort;
 
 -- ---------- Grammar rule flags (added for the pilot) ----------
-CREATE TABLE grammar_flags (
+CREATE TABLE IF NOT EXISTS grammar_flags (
   condition_output_id  int  NOT NULL REFERENCES condition_outputs(id) ON DELETE CASCADE,
   rule                 text NOT NULL,     -- long_sentence, passive, abbreviation
   n                    int  NOT NULL,

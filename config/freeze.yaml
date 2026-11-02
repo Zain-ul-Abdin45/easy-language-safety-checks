@@ -1,0 +1,6 @@
+# Freeze record. Held-out texts load only through src/heldout_guard.py, which checks this file against git.
+# Fill in at the freeze, after the protocol is committed and tagged:   git tag protocol-freeze <commit>
+frozen: false
+protocol_freeze_commit: null      # full commit hash that the tag "protocol-freeze" must point at
+heldout_file: data/heldout/heldout_texts.jsonl
+heldout_sha256: null              # SHA-256 of heldout_file, recorded when the texts are written

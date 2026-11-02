@@ -1,0 +1,29 @@
+# Pinned check models (checked 2026-11-02). Local copies in models/ are byte-identical to the Hub files at these commits
+# (weight SHA-256 equals the Hub LFS SHA-256). Do not change without a decision-log entry.
+nli_primary:
+  repo: cross-encoder/nli-deberta-v3-base
+  revision: 6c749ce3425cd33b46d187e45b92bbf96ee12ec7
+  local: models/nli-deberta-v3-base
+  weights: model.safetensors
+  weights_sha256: d8148c6d49e0a7925134294c56326c71fe0ab1dc390e37355e00c7efbb488afa
+  id2label: {0: contradiction, 1: entailment, 2: neutral}
+  positive_label: entailment
+minicheck:
+  repo: lytang/MiniCheck-RoBERTa-Large
+  revision: 74c8919647e61ed0f71bc177d94f10930f090068
+  local: models/minicheck-roberta-large
+  weights: pytorch_model.bin
+  weights_sha256: 67af45a2d5a2706283821049232c7d7c81cea22e81dfdbb7097487a98bc61b53
+  id2label: {0: "0", 1: "1"}      # config has no names; index 1 = supported, confirmed by the behavioural test in tests/test_d5_labels.py
+  positive_index: 1
+generator:
+  repo: Qwen/Qwen2.5-1.5B-Instruct
+  revision: 989aa7980e4cf806f80c7fef2b1adb7bc71aa306
+  weights: model.safetensors
+  weights_sha256: dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee   # equals the Hub LFS hash; verified by hashing the cached file at every load (the cache's blob names are not content hashes)
+
+# The Llama 3.2 chat template writes today's date into the system prompt (strftime_now), so the same text, seed and weights give a different
+# prompt, and often different sampled tokens, on a different day (found 2026-11-02: 51 of 64 stored Llama dev outputs did not regenerate).
+# Every v3 prompt for a model whose template uses the date is built with this one value: the day the Llama dev outputs were generated
+# (2026-10-31). Use it for all future Llama runs including held-out; change it only with a logged protocol amendment. Qwen's template has no date.
+chat_template_date_string: "31 Oct 2026"
