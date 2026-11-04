@@ -10,6 +10,8 @@ human simplicity flags, see sections 7 and 9).
 H0 (reported as a valid negative result): C5 does not reduce harm; word-level checks do not carry over
 to whole texts with this model and these rules.
 
+> Superseded for the held-out run (2026-11-02): H1 is C3 against C1 (11.10, 11.19). E1 (C2, C5) is descriptive and E2 (D4a) has its own verdict that never changes the verdict on H1 (11.23). The text above is the statement of 28 Oct. Current design: section 12.
+
 ## 2. Materials
 - 50–100 public or synthetic onboarding-style texts (see `02_data_plan.md`).
 - Split into dev (tuning thresholds, word lists, rules) and held-out (final run only).
@@ -42,6 +44,8 @@ Handling: the annotator marks fragments (`f`) while labelling (docs/06_codebook.
 from the AUC and their share is reported as a limitation.
 
 ## 5. Conditions
+> Conditions unchanged. After the NO-GO, C2 and C5 keep the placeholder tau = 0.30 (`config/pilot.yaml`, not tuned; the tau rule of section 6 applies only after a GO) and are descriptive (section 12).
+
 | ID | Policy applied to changed spans |
 |---|---|
 | C1 | None |
@@ -126,6 +130,8 @@ the rater gives the occurrence number (`quote#2`), and the importer asks for it.
 span's own text appears twice in the output, either occurrence counts as that span.
 
 ## 9. Success criteria
+> Superseded for the held-out run (2026-11-02): the primary comparison is C3 against C1; criteria 1 to 4 below apply with C3 in place of C5. `src/verdict.py` and the view `v_c5_vs_c1` still compute C5 against C1 and have not been moved (open before the held-out run). Success of the sentence-level check D4a is defined separately in 11.23, with its own use of the word partial.
+
 Success: C5 < C1 on harm per 100 words, preservation C5 ≥ C1, and both simplification guards met: C5 keeps at
 least 80% of C1's FKGL gain (X = 80%, preliminary; the memo says "most of C1's simplification"; stored as
 `min_simplification_kept`) and has at most 10 percentage points more simplicity-flagged outputs than C1
@@ -339,3 +345,20 @@ Both are reported next to the D4a result of the held-out run. Neither enters Gat
 - Measurement. Mains power, no low-power mode, nothing else busy; the first output of the process is a discarded warm-up; at least 20 measured outputs; D5 alone is reported next to the full pipeline (`src/generate_v3.py`, `src/machine_ready.py`). Outputs that ran on an unclean machine are listed and the statistics are given with and without them.
 - Timing of this entry. The statistic was chosen after the first clean run was reported, so it is not a pre-registered test of that run. That run (schema `p3_v3_ovh_20261102_031126`, 4 smoke texts, seeds 0 to 6, 27 measured outputs of 38 to 107 tokens) gives a full-pipeline median of 18.4% and maximum of 23.8%, 0 of 27 outputs above 25%, so it meets the bound under the median reading and under a per-output reading. D5 alone: median 2.4%, maximum 4.3%. The overhead falls with output length (median 21.8% up to 50 tokens, 13.5% over 80). The held-out run is the test of this rule.
 - Not changed: C2 and C5 need no extra generation, but the probability scoring costs one forward pass (about 15% of generation time); the saving from taking log-probabilities out of `generate(output_logits=True)` was checked on the 28 smoke outputs (largest difference 6.96e-05 against the 1e-4 tolerance) and not adopted, because the margin is thin and grows with output length. Outlook only.
+
+### 11.27 Two descriptive additions for the held-out run: random-revert reading of H1, and rule violations (2026-11-04; fixed before any held-out text exists; dev results known)
+- H1 reading. The H1 criterion is unchanged (lower bound of the paired C3 against C1 difference above 0, 95%, 11.19). Because the dev reduction of C3 (+0.14 [-0.00, +0.33]) lies inside the range of reverting the same number of reachable spans at random (+0.03 to +0.17, `src/controls.py`), the same random-revert control is computed for C3 on the held-out run and reported alongside, and a pass of H1 is read against it. It decides nothing and is not a second criterion; it was set with the dev numbers known.
+- Rule violations. Per output text, the number of sentences over 15 words, passive-voice sentences and unexplained abbreviations, counted with the C4 rules (`pilot.py`, `long_sentence`, `passive`, `abbreviation`), is reported for C1 and C3, descriptively. It is not a guard and not a check against the Easy-to-Read standards or DIN SPEC 33429. Direct address ("you") is not counted by the current code and is left out.
+- Not changed: the primary criterion, the guards of section 9, E1, E2 and the descriptive analyses of 11.22.
+
+## 12. Current design for the held-out run (summary of 2026-11-02; the entries of section 11 are authoritative)
+- Texts and generation: 60 held-out texts written before any output exists, two seeds (11.19); Qwen 2.5 1.5B Instruct primary, Llama 3.2 1B Instruct second (11.14, 11.24); one fixed prompt; for a model whose chat template writes the date, the pinned `chat_template_date_string` (11.24). A larger model from the TH OWL network may be added as a further comparison (offered by the supervisor on 2026-11-02; not decided).
+- Primary (H1): C3 against C1, harmful errors per 100 words, 95% paired bootstrap over texts, all seeds of a text together; harm is reduced if the lower bound of the reduction is above 0. Guards as in section 9 (protected items preserved at least as well as in C1, at least 80% of C1's FKGL gain, at most 10 points more simplicity flags), preliminary.
+- E1 (descriptive): C2 and C5 against C1 and against reverting the same number of spans at random; tau = 0.30 is the untuned placeholder.
+- E2 (D4a, verdict): success if the AUC lower bound is above 0.60 and the lower bound of recall minus random recall is above 0, 95% intervals; partial if the AUC bound is above 0.5 without success; flag rule exactly the lowest 30% of sentences, ties by sentence ID (11.23, 11.25). D5 (DeBERTa primary, MiniCheck sensitivity) is reported with intervals and no verdict. E2 never changes the verdict on H1.
+- Descriptive only, deciding nothing: D4a without first sentences and D4a by lead-in present or absent (11.22).
+- Overhead: median full-pipeline overhead at most 25% of generation time, share above 25% reported (11.26).
+- Also reported, deciding nothing: the random-revert control for C3 and rule violations per text for C1 and C3 (11.27).
+- Labelling and agreement: codebook 0.2.5 (11.11), one primary annotator; a blind subset of about 20% by a second person (not yet chosen) and a consistency re-label after one week (section 10).
+- Held-out access: only through the guard (`config/freeze.yaml`, git tag `protocol-freeze`, file hash, access log); `p3_heldout` is created only at the freeze.
+- Open before the held-out run: whether `v_c5_vs_c1` and `src/verdict.py` move to C3 against C1; the freeze; the cover and the second labeller.
