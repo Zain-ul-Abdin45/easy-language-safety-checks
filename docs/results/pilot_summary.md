@@ -1,3 +1,5 @@
+> Pilot status on the 32 development texts, written before the exposé. The options and decisions at the end have since been made; the current design is in the exposé and the protocol.
+
 # Project 3: where the dev study stands and what needs a decision
 
 Safety checks for small local models that write English Easy Language. Qwen 2.5 1.5B (Llama 3.2 1B as comparison), 32 development texts, 64 outputs per model, one annotator. All results are from the dev set and exploratory. The held-out set has not been generated or read.

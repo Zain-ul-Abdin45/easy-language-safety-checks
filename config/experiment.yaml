@@ -1,3 +1,6 @@
+# SUPERSEDED. Early draft parameters from October 2026; nothing reads this file.
+# The current settings are in pilot.yaml, second_model.yaml and freeze.yaml.
+# Values below (seeds, TBD fields) do not describe the study.
 # Draft parameters. Freeze before any held-out run (memo Fig. 1, step A).
 status: draft
 language: en

@@ -181,7 +181,7 @@ Stability: direction of effect holds across all seeds.
 Open before held-out: the importer and sheets for the derived span labels, and a new freeze date for the codebook.
 
 ### 11.1 Pivot to sentence- and fact-level checks: proposal and Gate A (written 2026-10-31, before any screen is computed)
-Source: `Project 3 pivot plan.md` (2026-10-31). Status: proposal by the researcher; the supervisor has not yet been consulted (questions in the plan).
+Source: `docs/archive/pivot_plan.md` (2026-10-31). Status: proposal by the researcher; the supervisor has not yet been consulted (questions in the plan).
 Reason: on dev, 17 of 90 severity 2-3 tags (19%) lie where word-level checks can act, and the probability AUC is NO-GO (0.569 [0.409, 0.726]). All decisions from here on are made with the dev results known.
 
 Gate A (offline screen on the 64 C1 outputs of the 32 dev texts; no new generation). The rule is fixed here, before the numbers are computed:
@@ -350,6 +350,13 @@ Both are reported next to the D4a result of the held-out run. Neither enters Gat
 - H1 reading. The H1 criterion is unchanged (lower bound of the paired C3 against C1 difference above 0, 95%, 11.19). Because the dev reduction of C3 (+0.14 [-0.00, +0.33]) lies inside the range of reverting the same number of reachable spans at random (+0.03 to +0.17, `src/controls.py`), the same random-revert control is computed for C3 on the held-out run and reported alongside, and a pass of H1 is read against it. It decides nothing and is not a second criterion; it was set with the dev numbers known.
 - Rule violations. Per output text, the number of sentences over 15 words, passive-voice sentences and unexplained abbreviations, counted with the C4 rules (`pilot.py`, `long_sentence`, `passive`, `abbreviation`), is reported for C1 and C3, descriptively. It is not a guard and not a check against the Easy-to-Read standards or DIN SPEC 33429. Direct address ("you") is not counted by the current code and is left out.
 - Not changed: the primary criterion, the guards of section 9, E1, E2 and the descriptive analyses of 11.22.
+
+### 11.28 Size and sampling of the second-rater subset (2026-11-08; proposed, not yet confirmed; fixed before any held-out text exists)
+- Unit of sampling. The subset is drawn at random by text, so all seeds, models and conditions of a drawn text are labelled together. Texts are drawn with a fixed seed recorded in the run log.
+- Size. The subset must contain at least 30 harmful sentences (severity 2 to 3, by the primary annotator). The first estimate is about 20% of the held-out outputs. If the draw holds fewer than 30 harmful sentences, texts are added at random until it does, as far as the second rater agrees. If the rater cannot label that many, the subset stays smaller and the agreement is reported as resting on a small sample.
+- Reason. The size of 20% in section 10 had no stated reason. The precision of kappa for a rare category depends on the number of harmful sentences, so the count of harmful sentences, not the share of outputs, is the quantity fixed here. The value 30 is a planning choice, not a result.
+- Unit of agreement. Sentences are compared per sentence (harmful or not). Omissions have no output sentence and are compared per text. The two are reported separately, with raw agreement beside kappa.
+- Not changed: the labelling rules, the codebook, and the rule that only the primary annotator's labels are counted.
 
 ## 12. Current design for the held-out run (summary of 2026-11-02; the entries of section 11 are authoritative)
 - Texts and generation: 60 held-out texts written before any output exists, two seeds (11.19); Qwen 2.5 1.5B Instruct primary, Llama 3.2 1B Instruct second (11.14, 11.24); one fixed prompt; for a model whose chat template writes the date, the pinned `chat_template_date_string` (11.24). A larger model from the TH OWL network may be added as a further comparison (offered by the supervisor on 2026-11-02; not decided).
